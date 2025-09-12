@@ -23,10 +23,12 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MAIN_GUILD_ID = os.getenv("MAIN_GUILD_ID")
 ADMIN_GUILD_ID = os.getenv("ADMIN_GUILD_ID")
 CODE_CHANNEL_ID = os.getenv("CODE_CHANNEL_ID")
+OWNER_USER_ID = os.getenv("OWNER_USER_ID")
+
 
 # Проверяем, что все ID и ключи на месте
-if not all([DISCORD_TOKEN, GEMINI_API_KEY, MAIN_GUILD_ID, ADMIN_GUILD_ID, CODE_CHANNEL_ID]):
-    raise ValueError("КРИТИЧЕСКАЯ ОШИБКА: Один из ключей (DISCORD_TOKEN, GEMINI_API_KEY, *_GUILD_ID, CODE_CHANNEL_ID) не найден в .env")
+if not all([DISCORD_TOKEN, GEMINI_API_KEY, MAIN_GUILD_ID, ADMIN_GUILD_ID, CODE_CHANNEL_ID, OWNER_USER_ID]):
+    raise ValueError("КРИТИЧЕСКАЯ ОШИБКА: Один из ключей или ID (DISCORD_TOKEN, GEMINI_API_KEY, *_GUILD_ID, CODE_CHANNEL_ID, OWNER_USER_ID) не найден в .env")
 
 # Настройка API Gemini
 genai.configure(api_key=GEMINI_API_KEY)
@@ -142,7 +144,7 @@ def load_daily_code():
     save_daily_code(new_code)
     print(f"Сгенерирован новый код на сегодня: {DAILY_ACCESS_CODE}")
 
-# --- 5. НАСТРОЙКА БОТА И КОМАНД ---
+# --- 5. НАСТРОЙКА БОТА ---
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
@@ -215,8 +217,14 @@ async def on_ready():
     exclude_names="Названия каналов для исключения, через запятую БЕЗ пробелов",
     access_code="Ежедневный код доступа для подтверждения"
 )
-@app_commands.checks.has_permissions(administrator=True)
 async def update_lore_by_name(interaction: discord.Interaction, category_name: str, exclude_names: str, access_code: str):
+    is_owner = str(interaction.user.id) == OWNER_USER_ID
+    is_admin = interaction.user.guild_permissions.administrator
+
+    if not (is_owner or is_admin):
+        await interaction.response.send_message("❌ **Ошибка доступа:** Эту команду могут использовать только администраторы сервера.", ephemeral=True)
+        return
+        
     if str(interaction.guild.id) != MAIN_GUILD_ID:
         await interaction.response.send_message("❌ **Ошибка доступа:** Эта команда запрещена на данном сервере.", ephemeral=True)
         return
