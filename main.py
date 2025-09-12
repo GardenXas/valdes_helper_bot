@@ -211,7 +211,7 @@ async def on_ready():
         print(f"Ошибка синхронизации: {e}")
 
 # --- 7. КОМАНДЫ БОТА ---
-@bot.tree.command(name="update_lore_by_name", description="[АДМИН] Обновляет лор, используя ежедневный код доступа.")
+@bot.tree.command(name="update_lore_by_name", description="[АДМИН] Обновляет лор и присылает файл для проверки.")
 @app_commands.describe(
     category_name="Точное название категории с лорными каналами",
     exclude_names="Названия каналов для исключения, через запятую БЕЗ пробелов",
@@ -263,13 +263,19 @@ async def update_lore_by_name(interaction: discord.Interaction, category_name: s
             f.write(full_lore_text)
         load_lore_from_file()
         file_size = os.path.getsize("file.txt") / 1024
-        embed = discord.Embed(title="✅ Лор успешно обновлен!", description="Файл `file.txt` на сервере был перезаписан.", color=discord.Color.green())
+        embed = discord.Embed(title="✅ Лор успешно обновлен!", description="Файл `file.txt` был перезаписан и прикреплен к этому сообщению для проверки.", color=discord.Color.green())
         embed.add_field(name="Обработано каналов", value=str(parsed_channels_count), inline=True)
         embed.add_field(name="Собрано сообщений", value=str(total_messages_count), inline=True)
         embed.add_field(name="Размер файла", value=f"{file_size:.2f} КБ", inline=True)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        
+        await interaction.followup.send(
+            embed=embed,
+            file=discord.File("file.txt"),
+            ephemeral=True
+        )
+        
     except Exception as e:
-        await interaction.followup.send(f"Произошла критическая ошибка при записи файла: {e}", ephemeral=True)
+        await interaction.followup.send(f"Произошла критическая ошибка при записи или отправке файла: {e}", ephemeral=True)
 
 @bot.tree.command(name="optimize_post", description="Улучшает РП-пост с помощью удобного интерфейса.")
 @app_commands.describe(post_text="Текст вашего поста.", optimization_level="Выберите уровень улучшения.", image="(Опционально) Изображение для контекста.")
