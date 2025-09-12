@@ -148,7 +148,26 @@ intents.messages = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- 6. ЕЖЕДНЕВНАЯ ЗАДАЧА ГЕНЕРАЦИИ КОДА ---
+# --- 6. УНИВЕРСАЛЬНАЯ ФУНКЦИЯ И ЕЖЕДНЕВНАЯ ЗАДАЧА ГЕНЕРАЦИИ КОДА ---
+async def send_access_code_to_admin_channel(code: str, title: str, description: str):
+    """Отправляет эмбед с кодом доступа на админский сервер."""
+    try:
+        admin_channel = bot.get_channel(int(CODE_CHANNEL_ID))
+        if admin_channel:
+            embed = discord.Embed(
+                title=title,
+                description=description,
+                color=discord.Color.gold(),
+                timestamp=datetime.now()
+            )
+            embed.add_field(name="Код", value=f"```{code}```")
+            embed.set_footer(text="Этот код действителен до конца текущих суток (по UTC).")
+            await admin_channel.send(embed=embed)
+        else:
+            print(f"Ошибка: Не удалось найти канал с ID {CODE_CHANNEL_ID} для отправки кода.")
+    except Exception as e:
+        print(f"Произошла ошибка при отправке кода: {e}")
+
 @tasks.loop(time=time(hour=0, minute=0, tzinfo=timezone.utc))
 async def update_code_task():
     global DAILY_ACCESS_CODE
@@ -157,23 +176,12 @@ async def update_code_task():
     DAILY_ACCESS_CODE = new_code
     save_daily_code(new_code)
     print(f"Сгенерирован новый ежедневный код: {new_code}")
-
-    try:
-        admin_channel = bot.get_channel(int(CODE_CHANNEL_ID))
-        if admin_channel:
-            embed = discord.Embed(
-                title="🔑 Новый код доступа",
-                description=f"Код доступа для команды `/update_lore_by_name` на сегодня:",
-                color=discord.Color.gold(),
-                timestamp=datetime.now()
-            )
-            embed.add_field(name="Код", value=f"```{new_code}```")
-            embed.set_footer(text="Этот код действителен в течение 24 часов.")
-            await admin_channel.send(embed=embed)
-        else:
-            print(f"Ошибка: Не удалось найти канал с ID {CODE_CHANNEL_ID} для отправки кода.")
-    except Exception as e:
-        print(f"Произошла ошибка при отправке нового кода: {e}")
+    
+    await send_access_code_to_admin_channel(
+        code=new_code,
+        title="🔑 Новый ежедневный код доступа",
+        description="Код доступа для команды `/update_lore_by_name` на следующие 24 часа:"
+    )
 
 @update_code_task.before_loop
 async def before_update_code_task():
@@ -184,7 +192,16 @@ async def on_ready():
     print(f'Бот {bot.user} успешно запущен!')
     load_lore_from_file()
     load_daily_code()
-    update_code_task.start()
+    
+    if not update_code_task.is_running():
+        update_code_task.start()
+        
+    await send_access_code_to_admin_channel(
+        code=DAILY_ACCESS_CODE,
+        title="⚙️ Текущий код доступа (После перезапуска)",
+        description="Бот был перезапущен. Вот актуальный код на сегодня:"
+    )
+    
     try:
         synced = await bot.tree.sync()
         print(f"Синхронизировано {len(synced)} команд.")
