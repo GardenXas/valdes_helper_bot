@@ -24,11 +24,13 @@ MAIN_GUILD_ID = os.getenv("MAIN_GUILD_ID")
 ADMIN_GUILD_ID = os.getenv("ADMIN_GUILD_ID")
 CODE_CHANNEL_ID = os.getenv("CODE_CHANNEL_ID")
 OWNER_USER_ID = os.getenv("OWNER_USER_ID")
+# НОВОЕ: Загрузка списка ID каналов для лора
+LORE_CHANNEL_IDS = os.getenv("LORE_CHANNEL_IDS")
 
 
-# Проверяем, что все ID и ключи на месте
-if not all([DISCORD_TOKEN, GEMINI_API_KEY, MAIN_GUILD_ID, ADMIN_GUILD_ID, CODE_CHANNEL_ID, OWNER_USER_ID]):
-    raise ValueError("КРИТИЧЕСКАЯ ОШИБКА: Один из ключей или ID (DISCORD_TOKEN, GEMINI_API_KEY, *_GUILD_ID, CODE_CHANNEL_ID, OWNER_USER_ID) не найден в .env")
+# ИЗМЕНЕНО: Проверяем, что все ID и ключи на месте, включая LORE_CHANNEL_IDS
+if not all([DISCORD_TOKEN, GEMINI_API_KEY, MAIN_GUILD_ID, ADMIN_GUILD_ID, CODE_CHANNEL_ID, OWNER_USER_ID, LORE_CHANNEL_IDS]):
+    raise ValueError("КРИТИЧЕСКАЯ ОШИБКА: Один из ключей или ID (DISCORD_TOKEN, GEMINI_API_KEY, *_GUILD_ID, CODE_CHANNEL_ID, OWNER_USER_ID, LORE_CHANNEL_IDS) не найден в .env")
 
 # Настройка API Gemini
 genai.configure(api_key=GEMINI_API_KEY)
@@ -110,6 +112,75 @@ class OptimizedPostModal(ui.Modal, title='Ваш улучшенный пост')
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.send_message("Окно закрыто.", ephemeral=True, delete_after=3)
 
+# НОВЫЙ КЛАСС: Модальное окно для ввода данных поста
+class PostOptimizeModal(ui.Modal, title='Оптимизация РП-поста'):
+    def __init__(self, image_attachment: discord.Attachment | None):
+        super().__init__(timeout=900) # Увеличено время ожидания до 15 минут
+        self.image = image_attachment
+        
+        self.optimization_level = ui.Select(
+            placeholder="Выберите уровень улучшения...",
+            options=[
+                discord.SelectOption(label="Минимальные правки", value="minimal", description="Исправление грамматики и форматирования."),
+                discord.SelectOption(label="Стандартная оптимизация", value="standard", description="Минимальные правки + одно предложение."),
+                discord.SelectOption(label="Максимальная креативность", value="creative", description="Полное художественное улучшение."),
+            ]
+        )
+        self.add_item(self.optimization_level)
+
+        self.post_text = ui.TextInput(
+            label="Текст вашего поста",
+            style=discord.TextStyle.paragraph,
+            placeholder="Вставьте сюда свой РП-пост...",
+            required=True,
+            max_length=1800
+        )
+        self.add_item(self.post_text)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # Вся логика обработки теперь находится здесь
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        
+        # Проверяем, был ли выбран уровень оптимизации
+        if not self.optimization_level.values:
+            await interaction.followup.send("❌ **Ошибка:** Вы не выбрали уровень оптимизации.", ephemeral=True)
+            return
+            
+        level_value = self.optimization_level.values[0]
+        post_text_value = self.post_text.value
+
+        level_map = {"minimal": "Минимальные правки", "standard": "Стандартная оптимизация", "creative": "Максимальная креативность"}
+        prompt = get_optimizer_prompt(level_map[level_value])
+        
+        content_to_send = [prompt, f"\n\nПост игрока:\n---\n{post_text_value}"]
+        
+        if self.image and self.image.content_type and self.image.content_type.startswith("image/"):
+            try:
+                image_bytes = await self.image.read()
+                pil_image = Image.open(io.BytesIO(image_bytes))
+                content_to_send.append(pil_image)
+            except Exception as e:
+                print(f"Ошибка обработки изображения: {e}")
+        
+        try:
+            response = await gemini_model.generate_content_async(content_to_send)
+            result_text = response.text.strip()
+            
+            if result_text.startswith("ОШИБКА:"):
+                error_embed = discord.Embed(title="❌ Обнаружена грубая лорная ошибка!", description=result_text.replace("ОШИБКА:", "").strip(), color=discord.Color.red())
+                await interaction.followup.send(embed=error_embed, ephemeral=True)
+            else:
+                embed = discord.Embed(title="✨ Ваш пост был оптимизирован!", color=discord.Color.gold())
+                embed.add_field(name="▶️ Оригинал:", value=f"```\n{post_text_value[:1000]}\n```", inline=False)
+                embed.add_field(name="✅ Улучшенная версия (превью):", value=f"{result_text[:1000]}...", inline=False)
+                embed.set_footer(text="Нажмите кнопку ниже, чтобы получить полный текст.")
+                view = PostView(result_text)
+                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        except Exception as e:
+            print(f"Произошла ошибка при генерации ответа Gemini: {e}")
+            error_embed = discord.Embed(title="🚫 Произошла внутренняя ошибка", description="Не удалось обработать ваш запрос. Пожалуйста, попробуйте еще раз.", color=discord.Color.dark_red())
+            await interaction.followup.send(embed=error_embed, ephemeral=True)
+
 class PostView(ui.View):
     def __init__(self, optimized_text: str):
         super().__init__(timeout=300)
@@ -182,7 +253,7 @@ async def update_code_task():
     await send_access_code_to_admin_channel(
         code=new_code,
         title="🔑 Новый ежедневный код доступа",
-        description="Код доступа для команды `/update_lore_by_name` на следующие 24 часа:"
+        description=f"Код доступа для команды `/update_lore` на следующие 24 часа:"
     )
 
 @update_code_task.before_loop
@@ -211,13 +282,11 @@ async def on_ready():
         print(f"Ошибка синхронизации: {e}")
 
 # --- 7. КОМАНДЫ БОТА ---
-@bot.tree.command(name="update_lore_by_name", description="[АДМИН] Обновляет лор и присылает файл для проверки.")
-@app_commands.describe(
-    category_name="Точное название категории с лорными каналами",
-    exclude_names="Названия каналов для исключения, через запятую БЕЗ пробелов",
-    access_code="Ежедневный код доступа для подтверждения"
-)
-async def update_lore_by_name(interaction: discord.Interaction, category_name: str, exclude_names: str, access_code: str):
+
+# ИЗМЕНЕНО: Команда полностью переработана
+@bot.tree.command(name="update_lore", description="[АДМИН] Собирает лор из заданных каналов и обновляет файл.")
+@app_commands.describe(access_code="Ежедневный код доступа для подтверждения")
+async def update_lore(interaction: discord.Interaction, access_code: str):
     is_owner = str(interaction.user.id) == OWNER_USER_ID
     is_admin = interaction.user.guild_permissions.administrator
 
@@ -235,21 +304,27 @@ async def update_lore_by_name(interaction: discord.Interaction, category_name: s
         
     await interaction.response.defer(ephemeral=True, thinking=True)
     
-    target_category = discord.utils.get(interaction.guild.categories, name=category_name)
-    if not target_category:
-        await interaction.followup.send(f"❌ **Ошибка:** Категория «{category_name}» не найдена. Проверьте точность названия.", ephemeral=True)
+    channel_ids = [int(id.strip()) for id in LORE_CHANNEL_IDS.split(',')]
+    if not channel_ids:
+        await interaction.followup.send("❌ **Ошибка конфигурации:** Список ID каналов в .env пуст или некорректен.", ephemeral=True)
         return
 
-    excluded_channel_names = {name.strip().lower() for name in exclude_names.split(',')}
-    
     full_lore_text = ""
     parsed_channels_count = 0
     total_messages_count = 0
-    sorted_channels = sorted(target_category.text_channels, key=lambda c: c.position)
+    
+    channels_to_parse = []
+    for channel_id in channel_ids:
+        channel = bot.get_channel(channel_id)
+        if channel and isinstance(channel, discord.TextChannel):
+            channels_to_parse.append(channel)
+        else:
+            print(f"Предупреждение: Канал с ID {channel_id} не найден или это не текстовый канал.")
+
+    # Сортируем каналы по их позиции на сервере для сохранения порядка
+    sorted_channels = sorted(channels_to_parse, key=lambda c: c.position)
 
     for channel in sorted_channels:
-        if channel.name.lower() in excluded_channel_names:
-            continue
         full_lore_text += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
         async for message in channel.history(limit=500, oldest_first=True):
             if message.content and not message.author.bot:
@@ -277,41 +352,18 @@ async def update_lore_by_name(interaction: discord.Interaction, category_name: s
     except Exception as e:
         await interaction.followup.send(f"Произошла критическая ошибка при записи или отправке файла: {e}", ephemeral=True)
 
+# ИЗМЕНЕНО: Команда теперь вызывает модальное окно
 @bot.tree.command(name="optimize_post", description="Улучшает РП-пост с помощью удобного интерфейса.")
-@app_commands.describe(post_text="Текст вашего поста.", optimization_level="Выберите уровень улучшения.", image="(Опционально) Изображение для контекста.")
-@app_commands.choices(optimization_level=[
-    discord.app_commands.Choice(name="Минимальные правки", value="minimal"),
-    discord.app_commands.Choice(name="Стандартная оптимизация", value="standard"),
-    discord.app_commands.Choice(name="Максимальная креативность", value="creative"),
-])
-async def optimize_post(interaction: discord.Interaction, post_text: str, optimization_level: discord.app_commands.Choice[str], image: discord.Attachment = None):
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    level_map = {"minimal": "Минимальные правки", "standard": "Стандартная оптимизация", "creative": "Максимальная креативность"}
-    prompt = get_optimizer_prompt(level_map[optimization_level.value])
-    content_to_send = [prompt, f"\n\nПост игрока:\n---\n{post_text}"]
-    if image and image.content_type and image.content_type.startswith("image/"):
-        try:
-            image_bytes = await image.read()
-            pil_image = Image.open(io.BytesIO(image_bytes))
-            content_to_send.append(pil_image)
-        except Exception as e:
-            print(f"Ошибка обработки изображения: {e}")
-    try:
-        response = await gemini_model.generate_content_async(content_to_send)
-        result_text = response.text.strip()
-        if result_text.startswith("ОШИБКА:"):
-            error_embed = discord.Embed(title="❌ Обнаружена грубая лорная ошибка!", description=result_text.replace("ОШИБКА:", "").strip(), color=discord.Color.red())
-            await interaction.followup.send(embed=error_embed, ephemeral=True)
-        else:
-            embed = discord.Embed(title="✨ Ваш пост был оптимизирован!", color=discord.Color.gold())
-            embed.add_field(name="▶️ Оригинал:", value=f"```\n{post_text[:1000]}\n```", inline=False)
-            embed.add_field(name="✅ Улучшенная версия (превью):", value=f"{result_text[:1000]}...", inline=False)
-            embed.set_footer(text="Нажмите кнопку ниже, чтобы получить полный текст.")
-            view = PostView(result_text)
-            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-    except Exception as e:
-        error_embed = discord.Embed(title="🚫 Произошла внутренняя ошибка", description="Не удалось обработать ваш запрос. Пожалуйста, попробуйте еще раз.", color=discord.Color.dark_red())
-        await interaction.followup.send(embed=error_embed, ephemeral=True)
+@app_commands.describe(image="(Опционально) Изображение для контекста.")
+async def optimize_post(interaction: discord.Interaction, image: discord.Attachment = None):
+    # Проверка, что прикрепленный файл - изображение
+    if image and (not image.content_type or not image.content_type.startswith("image/")):
+        await interaction.response.send_message("❌ **Ошибка:** Прикрепленный файл не является изображением.", ephemeral=True)
+        return
+        
+    modal = PostOptimizeModal(image)
+    await interaction.response.send_modal(modal)
+
 
 @bot.tree.command(name="ask_lore", description="Задать вопрос по миру, правилам и лору 'Вальдеса'")
 @app_commands.describe(question="Ваш вопрос Хранителю знаний.")
@@ -326,6 +378,7 @@ async def ask_lore(interaction: discord.Interaction, question: str):
         embed.set_footer(text=f"Ответил Хранитель знаний | Запросил: {interaction.user.display_name}")
         await interaction.followup.send(embed=embed)
     except Exception as e:
+        print(f"Произошла ошибка при обработке запроса /ask_lore: {e}")
         error_embed = discord.Embed(title="🚫 Ошибка в архиве", description="Хранитель знаний не смог найти ответ на ваш вопрос из-за непредвиденной ошибки.", color=discord.Color.dark_red())
         await interaction.followup.send(embed=error_embed, ephemeral=True)
 
