@@ -15,6 +15,8 @@ import json
 import random
 import string
 from datetime import datetime, time, timezone
+import sys
+import asyncio
 
 # Загрузка переменных окружения из файла .env
 load_dotenv()
@@ -279,7 +281,6 @@ async def on_ready():
 
 # --- 7. КОМАНДЫ БОТА ---
 
-# ИСПРАВЛЕННАЯ КОМАНДА
 @bot.tree.command(name="update_lore", description="[АДМИН] Собирает лор из заданных каналов и обновляет файл.")
 @app_commands.describe(access_code="Ежедневный код доступа для подтверждения")
 async def update_lore(interaction: discord.Interaction, access_code: str):
@@ -327,15 +328,12 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     for channel in sorted_channels:
         full_lore_text += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
         async for message in channel.history(limit=500, oldest_first=True):
-            # ===== НАЧАЛО ИЗМЕНЕННОГО БЛОКА =====
             content_found = False
             
-            # 1. Сначала проверяем обычное текстовое содержимое
             if message.content:
                 full_lore_text += message.content + "\n\n"
                 content_found = True
 
-            # 2. Затем проверяем наличие embeds в сообщении
             if message.embeds:
                 for embed in message.embeds:
                     if embed.title:
@@ -349,7 +347,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
 
             if content_found:
                 total_messages_count += 1
-            # ===== КОНЕЦ ИЗМЕНЕННОГО БЛОКА =====
 
         full_lore_text += f"--- КОНЕЦ КАНАЛА: {channel.name} ---\n"
         parsed_channels_count += 1
@@ -357,8 +354,10 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     try:
         with open("file.txt", "w", encoding="utf-8") as f:
             f.write(full_lore_text)
+        
         load_lore_from_file()
         file_size = os.path.getsize("file.txt") / 1024
+        
         embed = discord.Embed(title="✅ Лор успешно обновлен!", description="Файл `file.txt` был перезаписан и прикреплен к этому сообщению для проверки.", color=discord.Color.green())
         embed.add_field(name="Обработано каналов", value=str(parsed_channels_count), inline=True)
         embed.add_field(name="Собрано сообщений", value=str(total_messages_count), inline=True)
@@ -369,6 +368,13 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
             file=discord.File("file.txt"),
             ephemeral=True
         )
+
+        # БЛОК АВТОМАТИЧЕСКОГО ПЕРЕЗАПУСКА
+        await interaction.followup.send("✅ **Лор обновлен.** Перезапускаюсь для применения изменений через 5 секунд...", ephemeral=True)
+        await asyncio.sleep(5)
+        
+        print("Перезапуск бота после обновления лора...")
+        sys.exit()
         
     except Exception as e:
         await interaction.followup.send(f"Произошла критическая ошибка при записи или отправке файла: {e}", ephemeral=True)
@@ -382,7 +388,6 @@ async def optimize_post(interaction: discord.Interaction, image: discord.Attachm
         
     modal = PostOptimizeModal(image)
     await interaction.response.send_modal(modal)
-
 
 @bot.tree.command(name="ask_lore", description="Задать вопрос по миру, правилам и лору 'Вальдеса'")
 @app_commands.describe(question="Ваш вопрос Хранителю знаний.")
