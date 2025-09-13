@@ -24,11 +24,10 @@ MAIN_GUILD_ID = os.getenv("MAIN_GUILD_ID")
 ADMIN_GUILD_ID = os.getenv("ADMIN_GUILD_ID")
 CODE_CHANNEL_ID = os.getenv("CODE_CHANNEL_ID")
 OWNER_USER_ID = os.getenv("OWNER_USER_ID")
-# НОВОЕ: Загрузка списка ID каналов для лора
 LORE_CHANNEL_IDS = os.getenv("LORE_CHANNEL_IDS")
 
 
-# ИЗМЕНЕНО: Проверяем, что все ID и ключи на месте, включая LORE_CHANNEL_IDS
+# Проверяем, что все ID и ключи на месте
 if not all([DISCORD_TOKEN, GEMINI_API_KEY, MAIN_GUILD_ID, ADMIN_GUILD_ID, CODE_CHANNEL_ID, OWNER_USER_ID, LORE_CHANNEL_IDS]):
     raise ValueError("КРИТИЧЕСКАЯ ОШИБКА: Один из ключей или ID (DISCORD_TOKEN, GEMINI_API_KEY, *_GUILD_ID, CODE_CHANNEL_ID, OWNER_USER_ID, LORE_CHANNEL_IDS) не найден в .env")
 
@@ -112,10 +111,9 @@ class OptimizedPostModal(ui.Modal, title='Ваш улучшенный пост')
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.send_message("Окно закрыто.", ephemeral=True, delete_after=3)
 
-# НОВЫЙ КЛАСС: Модальное окно для ввода данных поста
 class PostOptimizeModal(ui.Modal, title='Оптимизация РП-поста'):
     def __init__(self, image_attachment: discord.Attachment | None):
-        super().__init__(timeout=900) # Увеличено время ожидания до 15 минут
+        super().__init__(timeout=900)
         self.image = image_attachment
         
         self.optimization_level = ui.Select(
@@ -138,10 +136,8 @@ class PostOptimizeModal(ui.Modal, title='Оптимизация РП-поста'
         self.add_item(self.post_text)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Вся логика обработки теперь находится здесь
         await interaction.response.defer(ephemeral=True, thinking=True)
         
-        # Проверяем, был ли выбран уровень оптимизации
         if not self.optimization_level.values:
             await interaction.followup.send("❌ **Ошибка:** Вы не выбрали уровень оптимизации.", ephemeral=True)
             return
@@ -283,7 +279,7 @@ async def on_ready():
 
 # --- 7. КОМАНДЫ БОТА ---
 
-# ИЗМЕНЕНО: Команда полностью переработана
+# ИСПРАВЛЕННАЯ КОМАНДА
 @bot.tree.command(name="update_lore", description="[АДМИН] Собирает лор из заданных каналов и обновляет файл.")
 @app_commands.describe(access_code="Ежедневный код доступа для подтверждения")
 async def update_lore(interaction: discord.Interaction, access_code: str):
@@ -304,9 +300,14 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         
     await interaction.response.defer(ephemeral=True, thinking=True)
     
-    channel_ids = [int(id.strip()) for id in LORE_CHANNEL_IDS.split(',')]
+    try:
+        channel_ids = [int(id.strip()) for id in LORE_CHANNEL_IDS.split(',')]
+    except ValueError:
+        await interaction.followup.send("❌ **Ошибка конфигурации:** Список ID каналов в .env содержит нечисловые значения.", ephemeral=True)
+        return
+        
     if not channel_ids:
-        await interaction.followup.send("❌ **Ошибка конфигурации:** Список ID каналов в .env пуст или некорректен.", ephemeral=True)
+        await interaction.followup.send("❌ **Ошибка конфигурации:** Список ID каналов в .env пуст.", ephemeral=True)
         return
 
     full_lore_text = ""
@@ -321,15 +322,35 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         else:
             print(f"Предупреждение: Канал с ID {channel_id} не найден или это не текстовый канал.")
 
-    # Сортируем каналы по их позиции на сервере для сохранения порядка
     sorted_channels = sorted(channels_to_parse, key=lambda c: c.position)
 
     for channel in sorted_channels:
         full_lore_text += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
         async for message in channel.history(limit=500, oldest_first=True):
-            if message.content and not message.author.bot:
+            # ===== НАЧАЛО ИЗМЕНЕННОГО БЛОКА =====
+            content_found = False
+            
+            # 1. Сначала проверяем обычное текстовое содержимое
+            if message.content:
                 full_lore_text += message.content + "\n\n"
+                content_found = True
+
+            # 2. Затем проверяем наличие embeds в сообщении
+            if message.embeds:
+                for embed in message.embeds:
+                    if embed.title:
+                        full_lore_text += f"**{embed.title}**\n"
+                    if embed.description:
+                        full_lore_text += embed.description + "\n"
+                    for field in embed.fields:
+                        full_lore_text += f"**{field.name}**\n{field.value}\n"
+                    full_lore_text += "\n"
+                content_found = True
+
+            if content_found:
                 total_messages_count += 1
+            # ===== КОНЕЦ ИЗМЕНЕННОГО БЛОКА =====
+
         full_lore_text += f"--- КОНЕЦ КАНАЛА: {channel.name} ---\n"
         parsed_channels_count += 1
 
@@ -352,11 +373,9 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     except Exception as e:
         await interaction.followup.send(f"Произошла критическая ошибка при записи или отправке файла: {e}", ephemeral=True)
 
-# ИЗМЕНЕНО: Команда теперь вызывает модальное окно
 @bot.tree.command(name="optimize_post", description="Улучшает РП-пост с помощью удобного интерфейса.")
 @app_commands.describe(image="(Опционально) Изображение для контекста.")
 async def optimize_post(interaction: discord.Interaction, image: discord.Attachment = None):
-    # Проверка, что прикрепленный файл - изображение
     if image and (not image.content_type or not image.content_type.startswith("image/")):
         await interaction.response.send_message("❌ **Ошибка:** Прикрепленный файл не является изображением.", ephemeral=True)
         return
