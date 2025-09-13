@@ -118,72 +118,6 @@ class OptimizedPostModal(ui.Modal, title='Ваш улучшенный пост')
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.send_message("Окно закрыто.", ephemeral=True, delete_after=3)
 
-class PostOptimizeModal(ui.Modal, title='Оптимизация РП-поста'):
-    def __init__(self, image_attachment: discord.Attachment | None):
-        super().__init__(timeout=900)
-        self.image = image_attachment
-        
-        self.optimization_level = ui.Select(
-            placeholder="Выберите уровень улучшения...",
-            options=[
-                discord.SelectOption(label="Минимальные правки", value="minimal", description="Исправление грамматики и форматирования."),
-                discord.SelectOption(label="Стандартная оптимизация", value="standard", description="Минимальные правки + одно предложение."),
-                discord.SelectOption(label="Максимальная креативность", value="creative", description="Полное художественное улучшение."),
-            ]
-        )
-        self.add_item(self.optimization_level)
-
-        self.post_text = ui.TextInput(
-            label="Текст вашего поста",
-            style=discord.TextStyle.paragraph,
-            placeholder="Вставьте сюда свой РП-пост...",
-            required=True,
-            max_length=1800
-        )
-        self.add_item(self.post_text)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        
-        if not self.optimization_level.values:
-            await interaction.followup.send("❌ **Ошибка:** Вы не выбрали уровень оптимизации.", ephemeral=True)
-            return
-            
-        level_value = self.optimization_level.values[0]
-        post_text_value = self.post_text.value
-
-        level_map = {"minimal": "Минимальные правки", "standard": "Стандартная оптимизация", "creative": "Максимальная креативность"}
-        prompt = get_optimizer_prompt(level_map[level_value])
-        
-        content_to_send = [prompt, f"\n\nПост игрока:\n---\n{post_text_value}"]
-        
-        if self.image and self.image.content_type and self.image.content_type.startswith("image/"):
-            try:
-                image_bytes = await self.image.read()
-                pil_image = Image.open(io.BytesIO(image_bytes))
-                content_to_send.append(pil_image)
-            except Exception as e:
-                print(f"Ошибка обработки изображения: {e}")
-        
-        try:
-            response = await gemini_model.generate_content_async(content_to_send)
-            result_text = response.text.strip()
-            
-            if result_text.startswith("ОШИБКА:"):
-                error_embed = discord.Embed(title="❌ Обнаружена грубая лорная ошибка!", description=result_text.replace("ОШИБКА:", "").strip(), color=discord.Color.red())
-                await interaction.followup.send(embed=error_embed, ephemeral=True)
-            else:
-                embed = discord.Embed(title="✨ Ваш пост был оптимизирован!", color=discord.Color.gold())
-                embed.add_field(name="▶️ Оригинал:", value=f"```\n{post_text_value[:1000]}\n```", inline=False)
-                embed.add_field(name="✅ Улучшенная версия (превью):", value=f"{result_text[:1000]}...", inline=False)
-                embed.set_footer(text="Нажмите кнопку ниже, чтобы получить полный текст.")
-                view = PostView(result_text)
-                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-        except Exception as e:
-            print(f"Произошла ошибка при генерации ответа Gemini: {e}")
-            error_embed = discord.Embed(title="🚫 Произошла внутренняя ошибка", description="Не удалось обработать ваш запрос. Пожалуйста, попробуйте еще раз.", color=discord.Color.dark_red())
-            await interaction.followup.send(embed=error_embed, ephemeral=True)
-
 class PostView(ui.View):
     def __init__(self, optimized_text: str):
         super().__init__(timeout=300)
@@ -405,15 +339,56 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     except Exception as e:
         await interaction.followup.send(f"Произошла критическая ошибка при записи или отправке файла: {e}", ephemeral=True)
 
-@bot.tree.command(name="optimize_post", description="Улучшает РП-пост с помощью удобного интерфейса.")
-@app_commands.describe(image="(Опционально) Изображение для контекста.")
-async def optimize_post(interaction: discord.Interaction, image: discord.Attachment = None):
+@bot.tree.command(name="optimize_post", description="Улучшает РП-пост, принимая текст и уровень улучшения.")
+@app_commands.describe(
+    post_text="Текст вашего поста для улучшения.",
+    optimization_level="Выберите желаемый уровень улучшения.",
+    image="(Опционально) Изображение для дополнительного контекста."
+)
+@app_commands.choices(optimization_level=[
+    discord.app_commands.Choice(name="Минимальные правки", value="minimal"),
+    discord.app_commands.Choice(name="Стандартная оптимизация", value="standard"),
+    discord.app_commands.Choice(name="Максимальная креативность", value="creative"),
+])
+async def optimize_post(interaction: discord.Interaction, post_text: str, optimization_level: discord.app_commands.Choice[str], image: discord.Attachment = None):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    
     if image and (not image.content_type or not image.content_type.startswith("image/")):
-        await interaction.response.send_message("❌ **Ошибка:** Прикрепленный файл не является изображением.", ephemeral=True)
+        await interaction.followup.send("❌ **Ошибка:** Прикрепленный файл не является изображением.", ephemeral=True)
         return
-        
-    modal = PostOptimizeModal(image)
-    await interaction.response.send_modal(modal)
+
+    level_map = {"minimal": "Минимальные правки", "standard": "Стандартная оптимизация", "creative": "Максимальная креативность"}
+    prompt = get_optimizer_prompt(level_map[optimization_level.value])
+    
+    content_to_send = [prompt, f"\n\nПост игрока:\n---\n{post_text}"]
+    
+    if image:
+        try:
+            image_bytes = await image.read()
+            pil_image = Image.open(io.BytesIO(image_bytes))
+            content_to_send.append(pil_image)
+        except Exception as e:
+            print(f"Ошибка обработки изображения: {e}")
+            await interaction.followup.send("⚠️ Не удалось обработать прикрепленное изображение, но я попробую улучшить текст без него.", ephemeral=True)
+
+    try:
+        response = await gemini_model.generate_content_async(content_to_send)
+        result_text = response.text.strip()
+
+        if result_text.startswith("ОШИБКА:"):
+            error_embed = discord.Embed(title="❌ Обнаружена грубая лорная ошибка!", description=result_text.replace("ОШИБКА:", "").strip(), color=discord.Color.red())
+            await interaction.followup.send(embed=error_embed, ephemeral=True)
+        else:
+            embed = discord.Embed(title="✨ Ваш пост был оптимизирован!", color=discord.Color.gold())
+            embed.add_field(name="▶️ Оригинал:", value=f"```\n{post_text[:1000]}\n```", inline=False)
+            embed.add_field(name="✅ Улучшенная версия (превью):", value=f"{result_text[:1000]}...", inline=False)
+            embed.set_footer(text="Нажмите кнопку ниже, чтобы получить полный текст.")
+            view = PostView(result_text)
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+    except Exception as e:
+        print(f"Произошла внутренняя ошибка в /optimize_post: {e}")
+        error_embed = discord.Embed(title="🚫 Произошла внутренняя ошибка", description="Не удалось обработать ваш запрос. Пожалуйста, попробуйте еще раз.", color=discord.Color.dark_red())
+        await interaction.followup.send(embed=error_embed, ephemeral=True)
 
 @bot.tree.command(name="ask_lore", description="Задать вопрос по миру, правилам и лору 'Вальдеса'")
 @app_commands.describe(question="Ваш вопрос Хранителю знаний.")
