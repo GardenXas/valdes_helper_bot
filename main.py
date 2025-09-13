@@ -420,6 +420,37 @@ async def ask_lore(interaction: discord.Interaction, question: str):
         error_embed = discord.Embed(title="🚫 Ошибка в архиве", description="Хранитель знаний не смог найти ответ на ваш вопрос из-за непредвиденной ошибки.", color=discord.Color.dark_red())
         await interaction.followup.send(embed=error_embed, ephemeral=True)
 
+@bot.tree.command(name="help", description="Показывает информацию обо всех доступных командах.")
+async def help(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="📜 Справка по командам",
+        description="Вот список всех доступных команд и их описание:",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="/optimize_post", value="Улучшает ваш РП-пост. Принимает текст, уровень улучшения и опционально изображение.", inline=False)
+    embed.add_field(name="/ask_lore", value="Задает вопрос Хранителю знаний по миру 'Вальдеса'. Ответ будет виден всем в канале.", inline=False)
+    embed.add_field(name="/about", value="Показывает информацию о боте и его создателе.", inline=False)
+    embed.add_field(name="/help", value="Показывает это справочное сообщение.", inline=False)
+    embed.add_field(name="/update_lore", value="**[Только для администраторов]**\nСобирает лор из всех каналов, обновляет файл и перезапускает бота.", inline=False)
+    
+    embed.set_footer(text="Ваш верный помощник в мире Вальдеса.")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="about", description="Показывает информацию о боте и его создателе.")
+async def about(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="О боте 'Хранитель Вальдеса'",
+        description="Я — ассистент, созданный для помощи игрокам и администрации текстового ролевого проекта 'Вальдес'.\n\nМоя главная задача — делать ваше погружение в мир более гладким и интересным, отвечая на вопросы по лору и помогая с качеством ваших постов.",
+        color=discord.Color.gold()
+    )
+    embed.add_field(name="Разработчик", value="**GX**", inline=True)
+    embed.add_field(name="Технологии", value="• Discord.py\n• Google Gemini API", inline=True)
+    embed.set_footer(text=f"Бот запущен на сервере: {interaction.guild.name}")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=False)
+
 # --- ЗАПУСК БОТА ---
 if __name__ == "__main__":
     keep_alive()
