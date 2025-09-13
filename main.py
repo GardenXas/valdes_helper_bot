@@ -217,6 +217,7 @@ def load_daily_code():
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
+intents.guilds = True # Важно для получения информации о каналах
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # --- 6. УНИВЕРСАЛЬНАЯ ФУНКЦИЯ И ЕЖЕДНЕВНАЯ ЗАДАЧА ГЕНЕРАЦИИ КОДА ---
@@ -318,35 +319,69 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     channels_to_parse = []
     for channel_id in channel_ids:
         channel = bot.get_channel(channel_id)
-        if channel and isinstance(channel, discord.TextChannel):
+        if channel and (isinstance(channel, discord.TextChannel) or isinstance(channel, discord.ForumChannel)):
             channels_to_parse.append(channel)
         else:
-            print(f"Предупреждение: Канал с ID {channel_id} не найден или это не текстовый канал.")
+            print(f"Предупреждение: Канал с ID {channel_id} не найден или его тип не поддерживается.")
 
     sorted_channels = sorted(channels_to_parse, key=lambda c: c.position)
 
     for channel in sorted_channels:
         full_lore_text += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
-        async for message in channel.history(limit=500, oldest_first=True):
-            content_found = False
-            
-            if message.content:
-                full_lore_text += message.content + "\n\n"
-                content_found = True
+        
+        # ===== НОВЫЙ БЛОК ЛОГИКИ ДЛЯ РАЗНЫХ ТИПОВ КАНАЛОВ =====
+        
+        # ЕСЛИ ЭТО КАНАЛ-ФОРУМ
+        if isinstance(channel, discord.ForumChannel):
+            # Сортируем ветки (публикации) по дате создания, от старых к новым
+            sorted_threads = sorted(channel.threads, key=lambda t: t.created_at)
+            for thread in sorted_threads:
+                try:
+                    # Получаем стартовое сообщение ветки
+                    starter_message = await thread.fetch_message(thread.id)
+                    if starter_message:
+                        full_lore_text += f"--- Начало публикации: {thread.name} ---\n\n"
+                        
+                        content_found = False
+                        if starter_message.content:
+                            full_lore_text += starter_message.content + "\n\n"
+                            content_found = True
+                        if starter_message.embeds:
+                            for embed in starter_message.embeds:
+                                if embed.title: full_lore_text += f"**{embed.title}**\n"
+                                if embed.description: full_lore_text += embed.description + "\n"
+                                for field in embed.fields: full_lore_text += f"**{field.name}**\n{field.value}\n"
+                                full_lore_text += "\n"
+                            content_found = True
+                        
+                        if content_found:
+                            total_messages_count += 1
+                        
+                        full_lore_text += f"--- Конец публикации: {thread.name} ---\n\n"
 
-            if message.embeds:
-                for embed in message.embeds:
-                    if embed.title:
-                        full_lore_text += f"**{embed.title}**\n"
-                    if embed.description:
-                        full_lore_text += embed.description + "\n"
-                    for field in embed.fields:
-                        full_lore_text += f"**{field.name}**\n{field.value}\n"
-                    full_lore_text += "\n"
-                content_found = True
-
-            if content_found:
-                total_messages_count += 1
+                except discord.NotFound:
+                    print(f"Не удалось найти стартовое сообщение для ветки '{thread.name}' (ID: {thread.id})")
+                except Exception as e:
+                    print(f"Ошибка при обработке ветки '{thread.name}': {e}")
+        
+        # ЕСЛИ ЭТО ОБЫЧНЫЙ ТЕКСТОВЫЙ КАНАЛ
+        else:
+            async for message in channel.history(limit=500, oldest_first=True):
+                content_found = False
+                if message.content:
+                    full_lore_text += message.content + "\n\n"
+                    content_found = True
+                if message.embeds:
+                    for embed in message.embeds:
+                        if embed.title: full_lore_text += f"**{embed.title}**\n"
+                        if embed.description: full_lore_text += embed.description + "\n"
+                        for field in embed.fields: full_lore_text += f"**{field.name}**\n{field.value}\n"
+                        full_lore_text += "\n"
+                    content_found = True
+                if content_found:
+                    total_messages_count += 1
+        
+        # =========================================================
 
         full_lore_text += f"--- КОНЕЦ КАНАЛА: {channel.name} ---\n"
         parsed_channels_count += 1
@@ -360,7 +395,7 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         
         embed = discord.Embed(title="✅ Лор успешно обновлен!", description="Файл `file.txt` был перезаписан и прикреплен к этому сообщению для проверки.", color=discord.Color.green())
         embed.add_field(name="Обработано каналов", value=str(parsed_channels_count), inline=True)
-        embed.add_field(name="Собрано сообщений", value=str(total_messages_count), inline=True)
+        embed.add_field(name="Собрано публикаций/сообщений", value=str(total_messages_count), inline=True)
         embed.add_field(name="Размер файла", value=f"{file_size:.2f} КБ", inline=True)
         
         await interaction.followup.send(
@@ -369,7 +404,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
             ephemeral=True
         )
 
-        # БЛОК АВТОМАТИЧЕСКОГО ПЕРЕЗАПУСКА
         await interaction.followup.send("✅ **Лор обновлен.** Перезапускаюсь для применения изменений через 5 секунд...", ephemeral=True)
         await asyncio.sleep(5)
         
