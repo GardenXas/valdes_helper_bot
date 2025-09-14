@@ -294,7 +294,19 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         full_lore_text += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
         
         if isinstance(channel, discord.ForumChannel):
-            sorted_threads = sorted(channel.threads, key=lambda t: t.created_at)
+            # --- ИСПРАВЛЕНИЕ ДЛЯ ЧТЕНИЯ АРХИВНЫХ ВЕТОК ---
+            active_threads = channel.threads
+            archived_threads = []
+            try:
+                async for thread in channel.archived_threads(limit=None):
+                    archived_threads.append(thread)
+            except Exception as e:
+                print(f"Не удалось получить архивные ветки для канала '{channel.name}': {e}")
+            
+            all_threads = active_threads + archived_threads
+            sorted_threads = sorted(all_threads, key=lambda t: t.created_at)
+            # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
             for thread in sorted_threads:
                 try:
                     starter_message = await thread.fetch_message(thread.id)
@@ -358,8 +370,10 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         await interaction.followup.send("✅ **Лор обновлен.** Перезапускаюсь для применения изменений через 5 секунд...", ephemeral=True)
         await asyncio.sleep(5)
         
-        print("Перезапуск бота после обновления лора...")
-        sys.exit()
+        # --- ИЗМЕНЕНИЕ ДЛЯ КОРРЕКТНОГО ПЕРЕЗАПУСКА ---
+        print("Закрываю соединение для корректного перезапуска...")
+        await bot.close()
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         
     except Exception as e:
         await interaction.followup.send(f"Произошла критическая ошибка при записи или отправке файла: {e}", ephemeral=True)
@@ -405,7 +419,6 @@ async def optimize_post(interaction: discord.Interaction, post_text: str, optimi
             await interaction.followup.send(embed=error_embed, ephemeral=True)
         else:
             embed = discord.Embed(title="✨ Ваш пост был оптимизирован!", color=discord.Color.gold())
-            # Используем `post_text` для показа оригинала, чтобы он был в том виде, в котором его ввел пользователь
             embed.add_field(name="▶️ Оригинал:", value=f"```\n{post_text[:1000]}\n```", inline=False)
             embed.add_field(name="✅ Улучшенная версия (превью):", value=f"{result_text[:1000]}...", inline=False)
             embed.set_footer(text="Нажмите кнопку ниже, чтобы получить полный текст.")
@@ -481,4 +494,3 @@ async def about(interaction: discord.Interaction):
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
-
