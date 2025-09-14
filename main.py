@@ -8,7 +8,7 @@ import google.generativeai as genai
 import os
 from dotenv import load_dotenv
 from flask import Flask
-from threading import Thread
+from threading import Thread # <--- Thread импортируется здесь
 from PIL import Image
 import io
 import json
@@ -133,7 +133,12 @@ app = Flask('')
 @app.route('/')
 def home(): return "Bot is alive and running!"
 def run(): app.run(host='0.0.0.0', port=8080)
-def keep_alive(): Thread(target=run).start()
+
+# --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+def keep_alive():
+    """Запускает Flask в фоновом потоке-ДЕМОНЕ."""
+    Thread(target=run, daemon=True).start()
+# --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
 class OptimizedPostModal(ui.Modal, title='Ваш улучшенный пост'):
     def __init__(self, optimized_text: str):
@@ -294,7 +299,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         full_lore_text += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
         
         if isinstance(channel, discord.ForumChannel):
-            # --- ИСПРАВЛЕНИЕ ДЛЯ ЧТЕНИЯ АРХИВНЫХ ВЕТОК ---
             active_threads = channel.threads
             archived_threads = []
             try:
@@ -305,7 +309,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
             
             all_threads = active_threads + archived_threads
             sorted_threads = sorted(all_threads, key=lambda t: t.created_at)
-            # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
             for thread in sorted_threads:
                 try:
@@ -370,10 +373,8 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         await interaction.followup.send("✅ **Лор обновлен.** Перезапускаюсь для применения изменений через 5 секунд...", ephemeral=True)
         await asyncio.sleep(5)
         
-        # --- ИЗМЕНЕНИЕ ДЛЯ КОРРЕКТНОГО ПЕРЕЗАПУСКА ---
         print("Закрываю соединение для корректного перезапуска...")
         await bot.close()
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
         
     except Exception as e:
         await interaction.followup.send(f"Произошла критическая ошибка при записи или отправке файла: {e}", ephemeral=True)
