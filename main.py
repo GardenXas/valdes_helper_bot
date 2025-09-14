@@ -8,7 +8,7 @@ import google.generativeai as genai
 import os
 from dotenv import load_dotenv
 from flask import Flask
-from threading import Thread # <--- Thread импортируется здесь
+from threading import Thread
 from PIL import Image
 import io
 import json
@@ -133,12 +133,8 @@ app = Flask('')
 @app.route('/')
 def home(): return "Bot is alive and running!"
 def run(): app.run(host='0.0.0.0', port=8080)
-
-# --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
 def keep_alive():
-    """Запускает Flask в фоновом потоке-ДЕМОНЕ."""
     Thread(target=run, daemon=True).start()
-# --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
 class OptimizedPostModal(ui.Modal, title='Ваш улучшенный пост'):
     def __init__(self, optimized_text: str):
@@ -298,6 +294,22 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     for channel in sorted_channels:
         full_lore_text += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
         
+        def parse_message(message):
+            nonlocal full_lore_text, total_messages_count
+            content_found = False
+            if message.content:
+                full_lore_text += message.content + "\n\n"
+                content_found = True
+            if message.embeds:
+                for embed in message.embeds:
+                    if embed.title: full_lore_text += f"**{embed.title}**\n"
+                    if embed.description: full_lore_text += embed.description + "\n"
+                    for field in embed.fields: full_lore_text += f"**{field.name}**\n{field.value}\n"
+                    full_lore_text += "\n"
+                content_found = True
+            if content_found:
+                total_messages_count += 1
+
         if isinstance(channel, discord.ForumChannel):
             active_threads = channel.threads
             archived_threads = []
@@ -311,43 +323,13 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
             sorted_threads = sorted(all_threads, key=lambda t: t.created_at)
 
             for thread in sorted_threads:
-                try:
-                    starter_message = await thread.fetch_message(thread.id)
-                    if starter_message:
-                        full_lore_text += f"--- Начало публикации: {thread.name} ---\n\n"
-                        content_found = False
-                        if starter_message.content:
-                            full_lore_text += starter_message.content + "\n\n"
-                            content_found = True
-                        if starter_message.embeds:
-                            for embed in starter_message.embeds:
-                                if embed.title: full_lore_text += f"**{embed.title}**\n"
-                                if embed.description: full_lore_text += embed.description + "\n"
-                                for field in embed.fields: full_lore_text += f"**{field.name}**\n{field.value}\n"
-                                full_lore_text += "\n"
-                            content_found = True
-                        if content_found: total_messages_count += 1
-                        full_lore_text += f"--- Конец публикации: {thread.name} ---\n\n"
-                except discord.NotFound:
-                    print(f"Не удалось найти стартовое сообщение для ветки '{thread.name}' (ID: {thread.id})")
-                except Exception as e:
-                    print(f"Ошибка при обработке ветки '{thread.name}': {e}")
-        
+                full_lore_text += f"--- Начало публикации: {thread.name} ---\n\n"
+                async for message in thread.history(limit=500, oldest_first=True):
+                    parse_message(message)
+                full_lore_text += f"--- Конец публикации: {thread.name} ---\n\n"
         else:
             async for message in channel.history(limit=500, oldest_first=True):
-                content_found = False
-                if message.content:
-                    full_lore_text += message.content + "\n\n"
-                    content_found = True
-                if message.embeds:
-                    for embed in message.embeds:
-                        if embed.title: full_lore_text += f"**{embed.title}**\n"
-                        if embed.description: full_lore_text += embed.description + "\n"
-                        for field in embed.fields: full_lore_text += f"**{field.name}**\n{field.value}\n"
-                        full_lore_text += "\n"
-                    content_found = True
-                if content_found:
-                    total_messages_count += 1
+                parse_message(message)
 
         full_lore_text += f"--- КОНЕЦ КАНАЛА: {channel.name} ---\n"
         parsed_channels_count += 1
