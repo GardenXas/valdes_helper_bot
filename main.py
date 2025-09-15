@@ -22,6 +22,7 @@ from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 import re
 import aiohttp
+from fontTools.ttLib import TTFont # <-- НОВЫЙ ИМПОРТ ДЛЯ ПРОВЕРКИ СИМВОЛОВ
 
 # Загрузка переменных окружения из файла .env
 load_dotenv()
@@ -55,6 +56,35 @@ def load_lore_from_file():
     except FileNotFoundError:
         print("КРИТИЧЕСКАЯ ОШИБКА: Файл 'file.txt' не найден.")
         VALDES_LORE = "Лор не был загружен из-за отсутствия файла."
+
+# --- НОВЫЙ КЛАСС ДЛЯ "ОЧИСТКИ" ТЕКСТА ---
+class CharacterSanitizer:
+    def __init__(self, font_path):
+        try:
+            font = TTFont(font_path)
+            self.supported_chars = set()
+            for table in font['cmap'].tables:
+                self.supported_chars.update(table.cmap.keys())
+            print(f"Загружен шрифт {font_path}, найдено {len(self.supported_chars)} поддерживаемых символов.")
+        except Exception as e:
+            print(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось загрузить cmap для шрифта {font_path}: {e}")
+            self.supported_chars = set()
+
+    def sanitize(self, text: str) -> str:
+        if not self.supported_chars:
+            return text # Если шрифт не загрузился, ничего не делаем, чтобы не стирать весь текст
+        
+        sanitized_chars = []
+        for char in text:
+            if ord(char) in self.supported_chars:
+                sanitized_chars.append(char)
+            else:
+                sanitized_chars.append('?') # Заменяем неподдерживаемый символ
+        return "".join(sanitized_chars)
+
+
+# --- 3. СИСТЕМНЫЕ ПРОМПТЫ (без изменений) ---
+# ... (остальная часть вашего кода до команды update_lore остается без изменений) ...
 
 # --- 3. СИСТЕМНЫЕ ПРОМПТЫ (без изменений) ---
 def get_optimizer_prompt(level):
@@ -293,23 +323,20 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
 
     pdf = FPDF()
     try:
-        pdf.add_font('Galindo', '', 'GalindoCyrillic-Regular.ttf')
-        pdf.add_font('Galindo', 'B', 'GalindoCyrillic-Regular.ttf')
-        pdf.add_font('Galindo', 'I', 'GalindoCyrillic-Regular.ttf')
-        pdf.add_font('Galindo', 'BI', 'GalindoCyrillic-Regular.ttf')
+        # --- ИЗМЕНЕНИЕ: Загружаем основной шрифт и СОЗДАЕМ "ОЧИСТИТЕЛЬ" ---
+        font_path = 'GalindoCyrillic-Regular.ttf'
+        sanitizer = CharacterSanitizer(font_path)
+        if not sanitizer.supported_chars:
+             await interaction.followup.send(f"❌ **Критическая ошибка:** Не удалось загрузить карту символов для шрифта `{font_path}`. Проверьте, что файл не поврежден.", ephemeral=True)
+             return
 
-        # --- ИЗМЕНЕНИЕ: Используем абсолютный путь к системному шрифту ---
-        pdf.add_font('DejaVu', '', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf')
+        pdf.add_font('Galindo', '', font_path)
+        pdf.add_font('Galindo', 'B', font_path)
+        pdf.add_font('Galindo', 'I', font_path)
+        pdf.add_font('Galindo', 'BI', font_path)
         
-        pdf.add_fallback_font('DejaVu')
     except RuntimeError as e:
-        error_message = str(e)
-        if 'Galindo' in error_message:
-            await interaction.followup.send("❌ **Критическая ошибка:** Файл шрифта `GalindoCyrillic-Regular.ttf` не найден.", ephemeral=True)
-        elif 'DejaVu' in error_message:
-            await interaction.followup.send("❌ **Критическая ошибка:** Запасной шрифт DejaVu не найден. Установите его командой `sudo apt install fonts-dejavu-core`", ephemeral=True)
-        else:
-            await interaction.followup.send(f"❌ **Критическая ошибка со шрифтом:** {e}", ephemeral=True)
+        await interaction.followup.send(f"❌ **Критическая ошибка со шрифтом:** {e}", ephemeral=True)
         return
     
     pdf.set_font('Galindo', '', 12)
@@ -334,19 +361,15 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
             nonlocal full_lore_text_for_memory, total_images_count
             try:
                 img = Image.open(io.BytesIO(image_bytes))
-
                 ocr_text = pytesseract.image_to_string(img, lang='rus+eng')
                 if ocr_text.strip():
                     full_lore_text_for_memory += f"--- Начало текста из изображения: {filename} ---\n{ocr_text.strip()}\n--- Конец текста ---\n\n"
-
                 page_width = pdf.w - pdf.l_margin - pdf.r_margin
                 ratio = img.height / img.width
                 img_width = page_width
                 img_height = page_width * ratio
-                
                 pdf.image(io.BytesIO(image_bytes), w=img_width, h=img_height)
                 pdf.ln(5)
-
                 total_images_count += 1
             except Exception as e:
                 print(f"Не удалось обработать изображение {filename}: {e}")
@@ -354,7 +377,8 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         for channel in sorted_channels:
             pdf.add_page()
             pdf.set_font('Galindo', 'B', 16)
-            pdf.cell(0, 10, f'Канал: {channel.name}', new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
+            # --- ИЗМЕНЕНИЕ: Очищаем текст перед отправкой в PDF ---
+            pdf.cell(0, 10, sanitizer.sanitize(f'Канал: {channel.name}'), new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
             pdf.ln(10)
             
             full_lore_text_for_memory += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
@@ -366,7 +390,9 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                 if message.content:
                     full_lore_text_for_memory += message.content + "\n\n"
                     pdf.set_font('Galindo', '', 12)
-                    pdf.write_html(robust_markdown_to_html(message.content))
+                    # --- ИЗМЕНЕНИЕ: Очищаем HTML перед отправкой ---
+                    html_content = robust_markdown_to_html(sanitizer.sanitize(message.content))
+                    pdf.write_html(html_content)
                     pdf.ln(5)
                     content_found = True
                 
@@ -375,20 +401,28 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                         if embed.title:
                             full_lore_text_for_memory += f"**{embed.title}**\n"
                             pdf.set_font('Galindo', 'B', 14)
-                            pdf.write_html(f"<b>{robust_markdown_to_html(embed.title)}</b>")
+                            # --- ИЗМЕНЕНИЕ: Очищаем текст и HTML ---
+                            html_title = f"<b>{robust_markdown_to_html(sanitizer.sanitize(embed.title))}</b>"
+                            pdf.write_html(html_title)
                             pdf.ln(2)
                         if embed.description:
                             full_lore_text_for_memory += embed.description + "\n"
                             pdf.set_font('Galindo', '', 12)
-                            pdf.write_html(robust_markdown_to_html(embed.description))
+                            # --- ИЗМЕНЕНИЕ: Очищаем HTML ---
+                            html_desc = robust_markdown_to_html(sanitizer.sanitize(embed.description))
+                            pdf.write_html(html_desc)
                             pdf.ln(4)
                         for field in embed.fields:
                             full_lore_text_for_memory += f"**{field.name}**\n{field.value}\n"
                             pdf.set_font('Galindo', 'B', 12)
-                            pdf.write_html(f"<b>{robust_markdown_to_html(field.name)}</b>")
+                            # --- ИЗМЕНЕНИЕ: Очищаем HTML ---
+                            html_field_name = f"<b>{robust_markdown_to_html(sanitizer.sanitize(field.name))}</b>"
+                            pdf.write_html(html_field_name)
                             pdf.ln(1)
                             pdf.set_font('Galindo', '', 12)
-                            pdf.write_html(robust_markdown_to_html(field.value))
+                            # --- ИЗМЕНЕНИЕ: Очищаем HTML ---
+                            html_field_value = robust_markdown_to_html(sanitizer.sanitize(field.value))
+                            pdf.write_html(html_field_value)
                             pdf.ln(4)
                         
                         if embed.image.url:
@@ -427,7 +461,8 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                 sorted_threads = sorted(all_threads, key=lambda t: t.created_at)
                 for thread in sorted_threads:
                     pdf.set_font('Galindo', 'I', 14)
-                    pdf.cell(0, 10, f"--- Публикация: {thread.name} ---", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L')
+                    # --- ИЗМЕНЕНИЕ: Очищаем текст ---
+                    pdf.cell(0, 10, sanitizer.sanitize(f"--- Публикация: {thread.name} ---"), new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L')
                     pdf.ln(5)
                     full_lore_text_for_memory += f"--- Начало публикации: {thread.name} ---\n\n"
                     async for message in thread.history(limit=500, oldest_first=True):
@@ -457,8 +492,7 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         embed.add_field(name="Вставлено изображений", value=str(total_images_count), inline=True)
         embed.add_field(name="Размер PDF", value=f"{pdf_size_mb:.2f} МБ", inline=True)
         
-        # Проверка размера файла перед отправкой
-        if pdf_size_mb > 24: # Лимит Discord для обычных пользователей ~25MB
+        if pdf_size_mb > 24:
             await interaction.followup.send(
                 content="⚠️ **Внимание:** Размер PDF-файла превышает 25 МБ. Я не могу отправить его в Discord. Файл сохранен на сервере.",
                 embed=embed,
@@ -482,6 +516,8 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
 
 
 # --- ОСТАЛЬНЫЕ КОМАНДЫ (без изменений) ---
+# ... (остальная часть вашего кода остается без изменений) ...
+
 @bot.tree.command(name="optimize_post", description="Улучшает РП-пост, принимая текст и уровень улучшения.")
 @app_commands.describe(
     post_text="Текст вашего поста для улучшения.",
