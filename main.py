@@ -37,7 +37,7 @@ if not all([DISCORD_TOKEN, GEMINI_API_KEY, MAIN_GUILD_ID, ADMIN_GUILD_ID, CODE_C
 
 # Настройка API Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+gemini_model = genai.GenerativeModel('gemini-2.5-flash')
 
 # --- 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И ФУНКЦИИ ДЛЯ ЛОРА ---
 VALDES_LORE = ""
@@ -557,4 +557,5 @@ async def about(interaction: discord.Interaction):
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
+
 
