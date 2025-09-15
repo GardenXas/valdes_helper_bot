@@ -21,7 +21,7 @@ import pytesseract
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 import re
-import aiohttp # <-- НОВЫЙ ИМПОРТ
+import aiohttp
 
 # Загрузка переменных окружения из файла .env
 load_dotenv()
@@ -297,14 +297,17 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         pdf.add_font('Galindo', 'B', 'GalindoCyrillic-Regular.ttf')
         pdf.add_font('Galindo', 'I', 'GalindoCyrillic-Regular.ttf')
         pdf.add_font('Galindo', 'BI', 'GalindoCyrillic-Regular.ttf')
-        pdf.add_font('DejaVu', '', 'DejaVuSans.ttf')
+
+        # --- ИЗМЕНЕНИЕ: Используем абсолютный путь к системному шрифту ---
+        pdf.add_font('DejaVu', '', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf')
+        
         pdf.add_fallback_font('DejaVu')
     except RuntimeError as e:
         error_message = str(e)
         if 'Galindo' in error_message:
             await interaction.followup.send("❌ **Критическая ошибка:** Файл шрифта `GalindoCyrillic-Regular.ttf` не найден.", ephemeral=True)
         elif 'DejaVu' in error_message:
-            await interaction.followup.send("❌ **Критическая ошибка:** Запасной шрифт `DejaVuSans.ttf` не найден.", ephemeral=True)
+            await interaction.followup.send("❌ **Критическая ошибка:** Запасной шрифт DejaVu не найден. Установите его командой `sudo apt install fonts-dejavu-core`", ephemeral=True)
         else:
             await interaction.followup.send(f"❌ **Критическая ошибка со шрифтом:** {e}", ephemeral=True)
         return
@@ -326,20 +329,16 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
 
     sorted_channels = sorted(channels_to_parse, key=lambda c: c.position)
 
-    # --- НАЧАЛО НОВОГО БЛОКА: АСИНХРОННАЯ СЕССИЯ ДЛЯ СКАЧИВАНИЯ ---
     async with aiohttp.ClientSession() as session:
-        # --- НОВАЯ ВЛОЖЕННАЯ ФУНКЦИЯ ДЛЯ ОБРАБОТКИ ЛЮБОГО ИЗОБРАЖЕНИЯ ---
         async def process_image_from_bytes(image_bytes: bytes, filename: str):
             nonlocal full_lore_text_for_memory, total_images_count
             try:
                 img = Image.open(io.BytesIO(image_bytes))
 
-                # Распознаем текст для /ask_lore
                 ocr_text = pytesseract.image_to_string(img, lang='rus+eng')
                 if ocr_text.strip():
                     full_lore_text_for_memory += f"--- Начало текста из изображения: {filename} ---\n{ocr_text.strip()}\n--- Конец текста ---\n\n"
 
-                # Вставляем изображение в PDF
                 page_width = pdf.w - pdf.l_margin - pdf.r_margin
                 ratio = img.height / img.width
                 img_width = page_width
@@ -352,7 +351,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
             except Exception as e:
                 print(f"Не удалось обработать изображение {filename}: {e}")
 
-        # --- ОСНОВНОЙ ЦИКЛ ОБРАБОТКИ ---
         for channel in sorted_channels:
             pdf.add_page()
             pdf.set_font('Galindo', 'B', 16)
@@ -372,7 +370,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                     pdf.ln(5)
                     content_found = True
                 
-                # --- ИЗМЕНЕНИЕ: ОБРАБОТКА ЭМБЕДОВ, ВКЛЮЧАЯ ИЗОБРАЖЕНИЯ ---
                 if message.embeds:
                     for embed in message.embeds:
                         if embed.title:
@@ -394,30 +391,34 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                             pdf.write_html(robust_markdown_to_html(field.value))
                             pdf.ln(4)
                         
-                        # --- НОВЫЙ БЛОК: ИЩЕМ ИЗОБРАЖЕНИЯ В ЭМБЕДЕ ---
                         if embed.image.url:
-                            async with session.get(embed.image.url) as resp:
-                                if resp.status == 200:
-                                    image_bytes = await resp.read()
-                                    await process_image_from_bytes(image_bytes, f"embed_image_{embed.image.url.split('/')[-1]}")
+                            try:
+                                async with session.get(embed.image.url) as resp:
+                                    if resp.status == 200:
+                                        image_bytes = await resp.read()
+                                        await process_image_from_bytes(image_bytes, f"embed_image_{embed.image.url.split('/')[-1]}")
+                            except Exception as e:
+                                print(f"Не удалось скачать изображение из эмбеда: {embed.image.url}, ошибка: {e}")
                         
                         if embed.thumbnail.url:
-                            async with session.get(embed.thumbnail.url) as resp:
-                                if resp.status == 200:
-                                    image_bytes = await resp.read()
-                                    await process_image_from_bytes(image_bytes, f"embed_thumbnail_{embed.thumbnail.url.split('/')[-1]}")
+                            try:
+                                async with session.get(embed.thumbnail.url) as resp:
+                                    if resp.status == 200:
+                                        image_bytes = await resp.read()
+                                        await process_image_from_bytes(image_bytes, f"embed_thumbnail_{embed.thumbnail.url.split('/')[-1]}")
+                            except Exception as e:
+                                print(f"Не удалось скачать thumbnail из эмбеда: {embed.thumbnail.url}, ошибка: {e}")
                         
                         full_lore_text_for_memory += "\n"
                     content_found = True
                 
-                # --- ИЗМЕНЕНИЕ: ОБРАБОТКА ВЛОЖЕНИЙ ---
                 if message.attachments:
                     for attachment in message.attachments:
                         if attachment.content_type and attachment.content_type.startswith('image/'):
                             image_bytes = await attachment.read()
                             await process_image_from_bytes(image_bytes, attachment.filename)
                 
-                if content_found or message.attachments:
+                if content_found or message.attachments or message.embeds:
                     total_messages_count += 1
                     pdf.ln(5)
 
@@ -456,11 +457,19 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         embed.add_field(name="Вставлено изображений", value=str(total_images_count), inline=True)
         embed.add_field(name="Размер PDF", value=f"{pdf_size_mb:.2f} МБ", inline=True)
         
-        await interaction.followup.send(
-            embed=embed,
-            file=discord.File(pdf_output_filename),
-            ephemeral=True
-        )
+        # Проверка размера файла перед отправкой
+        if pdf_size_mb > 24: # Лимит Discord для обычных пользователей ~25MB
+            await interaction.followup.send(
+                content="⚠️ **Внимание:** Размер PDF-файла превышает 25 МБ. Я не могу отправить его в Discord. Файл сохранен на сервере.",
+                embed=embed,
+                ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                embed=embed,
+                file=discord.File(pdf_output_filename),
+                ephemeral=True
+            )
 
         await interaction.followup.send("✅ **Лор обновлен.** Перезапускаюсь для применения изменений через 5 секунд...", ephemeral=True)
         await asyncio.sleep(5)
