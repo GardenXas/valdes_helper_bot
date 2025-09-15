@@ -86,45 +86,6 @@ def get_optimizer_prompt(level):
 1.  **ПОВЕСТВОВАНИЕ ОТ ТРЕТЬЕГО ЛИЦА:** Все действия персонажа должны быть написаны от **третьего лица** (Он/Она), даже если игрок написал от первого ('Я делаю').
 2.  **ЗАПРЕТ НА СИМВОЛЫ:** ЗАПРЕЩЕНО использовать любые другие символы для оформления, кроме `** **`, `" "` и `- `. Никаких `()`, `<<>>` и прочего.
 3.  **НЕ БЫТЬ СОАВТОРОМ:** Не добавляй новых действий или мотивации, которых не было в исходном тексте.
-
-**ТВОЙ ПРОЦЕСС РАБОТЫ (КАК РАЗБИРАТЬ ТЕКСТ):**
-Когда получаешь слитный текст от игрока, ты должен мысленно разделить его:
-1.  Прочитай всё предложение.
-2.  Найди слова-маркеры речи, такие как "говоря", "сказал", "крикнул". Текст после них — это прямая речь.
-3.  Найди слова-маркеры звуков, такие как "напевая", "мыча". Текст после них — это звук в кавычках.
-4.  Всё остальное — это действия.
-5.  Собери разобранные части в пост, применяя 'КЛЮЧЕВЫЕ ПРАВИЛА ОФОРМЛЕНИЯ'.
-
-**ПРИМЕР РАЗБОРА СЛОЖНОГО ПОСТА:**
-*   **Текст игрока:** `я встаю с пола и иду на улицу напивая ляляля и говоря какой прекрасный этот день`
-*   **ТВОЙ ПРАВИЛЬНЫЙ РЕЗУЛЬТАТ:**
-    **Он встает с пола и идет на улицу.**
-    "Ля-ля-ля..."
-    - Какой прекрасный этот день!
-
----
-**ЗАДАЧА 1: ПРОВЕРКА НА ГРУБЫЕ ЛОРНЫЕ ОШИБКИ**
-(Проверка на современную технику, магию и т.д. Если нашел — верни "ОШИБКА:")
-
-**ЗАДАЧА 2: ОПТИМИЗАЦИЯ ПОСТА (если ошибок нет)**
-Обработай пост согласно уровню '{level}', соблюдая ВСЕ вышеописанные правила.
-
-*   **Уровень 'Минимальные правки':**
-    *   Твоя единственная задача — разобрать текст игрока на действия, мысли/звуки и речь и **ПЕРЕФОРМАТИРОВАТЬ** его согласно правилам.
-    *   Переведи действия в третье лицо.
-    *   **ЗАПРЕЩЕНО** добавлять, убирать или изменять слова, кроме смены лица повествования (я -> он/она). Только форматирование.
-
-*   **Уровень 'Стандартная оптимизация':**
-    *   Выполни все требования 'Минимальных правок'.
-    *   Исправь грамматические ошибки.
-    *   Можешь добавить **ОДНО** короткое предложение, описывающее эмоцию или деталь окружения.
-
-*   **Уровень 'Максимальная креативность':**
-    *   Выполни все требования 'Стандартной оптимизации'.
-    *   Художественно обогати описание **заявленных игроком действий**.
-
-**ФИНАЛЬНОЕ ПРАВИЛО:**
-Верни ТОЛЬКО готовый текст поста или сообщение об ошибке. Никаких предисловий.
 """
 
 def get_lore_retrieval_prompt():
@@ -250,13 +211,9 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     try:
         font_path = 'GalindoCyrillic-Regular.ttf'
         sanitizer = CharacterSanitizer(font_path)
-        pdf.add_font('Galindo', '', font_path)
-        pdf.add_font('Galindo', 'B', font_path)
-        pdf.add_font('Galindo', 'I', font_path)
-        pdf.add_font('Galindo', 'BI', font_path)
+        pdf.add_font('Galindo', '', font_path); pdf.add_font('Galindo', 'B', font_path); pdf.add_font('Galindo', 'I', font_path); pdf.add_font('Galindo', 'BI', font_path)
     except Exception as e: return await interaction.followup.send(f"❌ **Критическая ошибка со шрифтом:**\n{e}", ephemeral=True)
     
-    pdf.set_font('Galindo', '', 12)
     full_lore_text_for_memory = ""
     parsed_channels_count, total_messages_count, total_images_count = 0, 0, 0
     channels_to_parse = [bot.get_channel(cid) for cid in channel_ids if bot.get_channel(cid)]
@@ -288,27 +245,40 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
             except Exception as e:
                 print(f"Ошибка при ИИ-индексации изображения {message.id}: {e}")
 
+        async def process_message(message: discord.Message):
+            nonlocal total_messages_count, full_lore_text_for_memory
+            if message.author.bot: return
+            
+            if message.content:
+                full_lore_text_for_memory += message.content + "\n\n"
+                pdf.set_font('Galindo', '', 12)
+                pdf.write_html(robust_markdown_to_html(sanitizer.sanitize(message.content)))
+                pdf.ln(5)
+            
+            if message.attachments:
+                for attachment in message.attachments:
+                    if attachment.content_type and attachment.content_type.startswith('image/'):
+                        await index_image_with_ai(await attachment.read(), message)
+            
+            total_messages_count += 1
+
         for channel in sorted_channels:
-            pdf.add_page(); pdf.set_font('Galindo', 'B', 16)
+            pdf.add_page(); pdf.set_font('Galindo', 'B', 16); pdf.set_font_size(16)
             pdf.cell(0, 10, sanitizer.sanitize(f'Канал: {channel.name}'), new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C'); pdf.ln(10)
             full_lore_text_for_memory += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
             
-            history_limit = 2000 # Лимит сообщений на канал
-            async for message in channel.history(limit=history_limit, oldest_first=True):
-                if message.author.bot: continue
-                
-                if message.content:
-                    full_lore_text_for_memory += message.content + "\n\n"
-                    pdf.set_font('Galindo', '', 12)
-                    pdf.write_html(robust_markdown_to_html(sanitizer.sanitize(message.content)))
-                    pdf.ln(5)
-                
-                if message.attachments:
-                    for attachment in message.attachments:
-                        if attachment.content_type and attachment.content_type.startswith('image/'):
-                            await index_image_with_ai(await attachment.read(), message)
-                
-                total_messages_count += 1
+            # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+            if isinstance(channel, discord.ForumChannel):
+                all_threads = channel.threads + [t async for t in channel.archived_threads(limit=None)]
+                for thread in sorted(all_threads, key=lambda t: t.created_at):
+                    full_lore_text_for_memory += f"--- Начало публикации: {thread.name} ---\n\n"
+                    async for message in thread.history(limit=500, oldest_first=True):
+                        await process_message(message)
+                    full_lore_text_for_memory += f"--- Конец публикации: {thread.name} ---\n\n"
+            else: # Это обычный текстовый канал
+                async for message in channel.history(limit=2000, oldest_first=True):
+                    await process_message(message)
+            # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
             full_lore_text_for_memory += f"--- КОНЕЦ КАНАЛА: {channel.name} ---\n"
             parsed_channels_count += 1
