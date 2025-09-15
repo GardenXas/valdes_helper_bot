@@ -45,7 +45,7 @@ except ValueError:
     raise ValueError("КРИТИЧЕСКАЯ ОШИБКА: CODE_CHANNEL_ID и OWNER_USER_ID должны быть числами.")
 
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel('gemini-2.5-flash')
+gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
 # --- 2. ВСПОМОГАТЕЛЬНЫЕ КЛАССЫ И ФУНКЦИИ ---
 class CharacterSanitizer:
@@ -243,7 +243,7 @@ async def before_send_daily_code_task():
     await bot.wait_until_ready()
     print("Цикл отправки ежедневного кода готов к запуску.")
 
-@bot.tree.command(name="update_lore", description="[АДМИН] Собирает весь лор в единый PDF-файл.")
+@bot.tree.command(name="update_lore", description="[АДМИН] Собирает весь лор в PDF и отправляет вам для проверки.")
 @app_commands.describe(access_code="Ежедневный код доступа")
 async def update_lore(interaction: discord.Interaction, access_code: str):
     if not (interaction.user.id == OWNER_USER_ID or interaction.user.guild_permissions.administrator):
@@ -316,6 +316,9 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
             total_messages_count += 1
 
         for channel in sorted_channels:
+            if not channel:
+                print(f"ПРЕДУПРЕЖДЕНИЕ: Канал из LORE_CHANNEL_IDS не найден. Возможно, ID неверный или у бота нет доступа.")
+                continue
             pdf.add_page(); pdf.set_font('Galindo', 'B', 16)
             pdf.cell(0, 10, sanitizer.sanitize(f'Сборник Лора: {channel.name}'), new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C'); pdf.ln(10)
             
@@ -333,15 +336,20 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         pdf.output(LORE_PDF_PATH)
         pdf_size_mb = os.path.getsize(LORE_PDF_PATH) / (1024 * 1024)
         
-        embed = discord.Embed(title="✅ Лор успешно собран в PDF!", description="Контекст и источники из каналов были добавлены для улучшения работы ИИ.", color=discord.Color.green())
+        embed = discord.Embed(title="✅ Лор успешно собран!", color=discord.Color.green())
         embed.add_field(name="Собрано сообщений", value=str(total_messages_count))
         embed.add_field(name="Вставлено изображений", value=str(total_images_count))
         embed.add_field(name="Итоговый размер", value=f"{pdf_size_mb:.2f} МБ")
         
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        if pdf_size_mb < 8.0:
+            embed.description = "Файл с лором (`lore.pdf`) прикреплен к этому сообщению. Теперь вы можете проверить его содержимое."
+            await interaction.followup.send(embed=embed, file=discord.File(LORE_PDF_PATH), ephemeral=True)
+        else:
+            embed.description = "⚠️ **Файл слишком большой для отправки в Discord (>8 МБ).** Он был сохранен на сервере, но я не могу его прикрепить. Проверьте содержимое на сервере."
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     except Exception as e:
-        await interaction.followup.send(f"Критическая ошибка при записи файла: {e}", ephemeral=True)
+        await interaction.followup.send(f"Критическая ошибка при записи или отправке файла: {e}", ephemeral=True)
 
 
 @bot.tree.command(name="ask_lore", description="Задать вопрос по миру, правилам и лору 'Вальдеса'")
@@ -429,7 +437,7 @@ async def help(interaction: discord.Interaction):
     embed.add_field(name="/ask_lore", value="Задает вопрос Хранителю знаний (перезарядка 1 мин.).", inline=False)
     embed.add_field(name="/about", value="Показывает информацию о боте и его создателе.", inline=False)
     embed.add_field(name="/help", value="Показывает это справочное сообщение.", inline=False)
-    embed.add_field(name="/update_lore", value="**[АДМИН]** Собирает весь лор в PDF-файл для команды /ask_lore.", inline=False)
+    embed.add_field(name="/update_lore", value="**[АДМИН]** Собирает весь лор в PDF и отправляет его вам для проверки.", inline=False)
     embed.set_footer(text="Ваш верный помощник в мире Вальдеса.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -446,5 +454,3 @@ async def about(interaction: discord.Interaction):
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
-
-
