@@ -249,7 +249,6 @@ async def on_ready():
 
 # --- 7. КОМАНДЫ БОТА ---
 
-# --- НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ПРЕОБРАЗОВАНИЯ MARKDOWN ---
 def simple_markdown_to_html(text: str) -> str:
     """Преобразует базовый Discord Markdown в HTML для FPDF."""
     text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
@@ -260,11 +259,9 @@ def simple_markdown_to_html(text: str) -> str:
     text = text.replace('<i>', '<i>', 1).replace('<i>', '</i>', 1)
     return text.replace('\n', '<br/>')
 
-# --- ЗНАЧИТЕЛЬНО ИЗМЕНЕННАЯ КОМАНДА ---
 @bot.tree.command(name="update_lore", description="[АДМИН] Собирает лор из каналов в единый PDF-файл.")
 @app_commands.describe(access_code="Ежедневный код доступа для подтверждения")
 async def update_lore(interaction: discord.Interaction, access_code: str):
-    # --- Проверки доступа (без изменений) ---
     is_owner = str(interaction.user.id) == OWNER_USER_ID
     is_admin = interaction.user.guild_permissions.administrator
 
@@ -292,18 +289,18 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         await interaction.followup.send("❌ **Ошибка конфигурации:** Список ID каналов в .env пуст.", ephemeral=True)
         return
 
-    # --- Инициализация PDF ---
     pdf = FPDF()
     try:
+        # --- ИЗМЕНЕНО: Используем ваш шрифт ---
         pdf.add_font('Galindo', '', 'GalindoCyrillic-Regular.ttf')
     except RuntimeError:
-        await interaction.followup.send("❌ **Критическая ошибка:** Файл шрифта `DejaVuSans.ttf` не найден рядом с `main.py`. Загрузите его на сервер.", ephemeral=True)
+        await interaction.followup.send("❌ **Критическая ошибка:** Файл шрифта `GalindoCyrillic-Regular.ttf` не найден рядом с `main.py`. Загрузите его на сервер.", ephemeral=True)
         return
     
-    pdf.set_font('DejaVu', '', 12)
+    # --- ИЗМЕНЕНО: Устанавливаем ваш шрифт по умолчанию ---
+    pdf.set_font('Galindo', '', 12)
     
-    # --- Переменные для сбора данных ---
-    full_lore_text_for_memory = "" # Для команды /ask_lore
+    full_lore_text_for_memory = ""
     parsed_channels_count = 0
     total_messages_count = 0
     total_images_count = 0
@@ -318,10 +315,10 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
 
     sorted_channels = sorted(channels_to_parse, key=lambda c: c.position)
 
-    # --- Главный цикл обработки ---
     for channel in sorted_channels:
         pdf.add_page()
-        pdf.set_font('DejaVu', 'B', 16)
+        # --- ИЗМЕНЕНО: Используем ваш шрифт ---
+        pdf.set_font('Galindo', 'B', 16)
         pdf.cell(0, 10, f'Канал: {channel.name}', 0, 1, 'C')
         pdf.ln(10)
         
@@ -331,10 +328,10 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
             nonlocal full_lore_text_for_memory, total_messages_count, total_images_count
             content_found = False
             
-            # 1. ОБРАБОТКА ТЕКСТА И ЭМБЕДОВ
             if message.content:
                 full_lore_text_for_memory += message.content + "\n\n"
-                pdf.set_font('DejaVu', '', 12)
+                # --- ИЗМЕНЕНО: Используем ваш шрифт ---
+                pdf.set_font('Galindo', '', 12)
                 pdf.write_html(simple_markdown_to_html(message.content))
                 pdf.ln(5)
                 content_found = True
@@ -343,26 +340,29 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                 for embed in message.embeds:
                     if embed.title:
                         full_lore_text_for_memory += f"**{embed.title}**\n"
-                        pdf.set_font('DejaVu', 'B', 14)
+                        # --- ИЗМЕНЕНО: Используем ваш шрифт ---
+                        pdf.set_font('Galindo', 'B', 14)
                         pdf.write_html(f"<b>{simple_markdown_to_html(embed.title)}</b>")
                         pdf.ln(2)
                     if embed.description:
                         full_lore_text_for_memory += embed.description + "\n"
-                        pdf.set_font('DejaVu', '', 12)
+                        # --- ИЗМЕНЕНО: Используем ваш шрифт ---
+                        pdf.set_font('Galindo', '', 12)
                         pdf.write_html(simple_markdown_to_html(embed.description))
                         pdf.ln(4)
                     for field in embed.fields:
                         full_lore_text_for_memory += f"**{field.name}**\n{field.value}\n"
-                        pdf.set_font('DejaVu', 'B', 12)
+                        # --- ИЗМЕНЕНО: Используем ваш шрифт ---
+                        pdf.set_font('Galindo', 'B', 12)
                         pdf.write_html(f"<b>{simple_markdown_to_html(field.name)}</b>")
                         pdf.ln(1)
-                        pdf.set_font('DejaVu', '', 12)
+                        # --- ИЗМЕНЕНО: Используем ваш шрифт ---
+                        pdf.set_font('Galindo', '', 12)
                         pdf.write_html(simple_markdown_to_html(field.value))
                         pdf.ln(4)
                     full_lore_text_for_memory += "\n"
                 content_found = True
             
-            # 2. ОБРАБОТКА ИЗОБРАЖЕНИЙ
             if message.attachments:
                 for attachment in message.attachments:
                     if attachment.content_type and attachment.content_type.startswith('image/'):
@@ -370,12 +370,10 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                             image_bytes = await attachment.read()
                             img = Image.open(io.BytesIO(image_bytes))
                             
-                            # Добавляем распознанный текст в лор для /ask_lore
                             ocr_text = pytesseract.image_to_string(img, lang='rus+eng')
                             if ocr_text.strip():
                                 full_lore_text_for_memory += f"--- Начало текста из изображения: {attachment.filename} ---\n{ocr_text.strip()}\n--- Конец текста ---\n\n"
 
-                            # Вставляем изображение в PDF
                             page_width = pdf.w - pdf.l_margin - pdf.r_margin
                             ratio = img.height / img.width
                             img_width = page_width
@@ -391,14 +389,14 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
             
             if content_found:
                 total_messages_count += 1
-                pdf.ln(5) # Добавляем отступ между сообщениями
+                pdf.ln(5)
 
-        # Итерация по сообщениям в каналах и тредах
         if isinstance(channel, discord.ForumChannel):
             all_threads = channel.threads + [t async for t in channel.archived_threads(limit=None)]
             sorted_threads = sorted(all_threads, key=lambda t: t.created_at)
             for thread in sorted_threads:
-                pdf.set_font('DejaVu', 'I', 14)
+                # --- ИЗМЕНЕНО: Используем ваш шрифт ---
+                pdf.set_font('Galindo', 'I', 14)
                 pdf.cell(0, 10, f"--- Публикация: {thread.name} ---", 0, 1, 'L')
                 pdf.ln(5)
                 full_lore_text_for_memory += f"--- Начало публикации: {thread.name} ---\n\n"
@@ -412,17 +410,14 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         full_lore_text_for_memory += f"--- КОНЕЦ КАНАЛА: {channel.name} ---\n"
         parsed_channels_count += 1
 
-    # --- Сохранение и отправка результатов ---
     try:
-        # Сохраняем PDF
         pdf_output_filename = "lore.pdf"
         pdf.output(pdf_output_filename)
         
-        # Сохраняем текстовый файл для /ask_lore
         with open("file.txt", "w", encoding="utf-8") as f:
             f.write(full_lore_text_for_memory)
         
-        load_lore_from_file() # Обновляем лор в памяти
+        load_lore_from_file()
         
         pdf_size_mb = os.path.getsize(pdf_output_filename) / (1024 * 1024)
         
@@ -565,4 +560,3 @@ async def about(interaction: discord.Interaction):
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
-
