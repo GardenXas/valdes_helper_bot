@@ -421,6 +421,7 @@ async def about(interaction: discord.Interaction):
 # --- ЗАПУСК БОТА ---
 if __name__ == "__main__":
     keep_alive()
-    bot.run(DISCORD_TOKEN)```
+    bot.run(DISCORD_TOKEN)
+
 
 
