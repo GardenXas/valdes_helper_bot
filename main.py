@@ -37,7 +37,7 @@ if not all([DISCORD_TOKEN, GEMINI_API_KEY, MAIN_GUILD_ID, ADMIN_GUILD_ID, CODE_C
 
 # Настройка API Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel('gemini-2.5-flash')
+gemini_model = genai.GenerativeModel('gemini-1.5-flash')
 
 # --- 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И ФУНКЦИИ ДЛЯ ЛОРА ---
 VALDES_LORE = ""
@@ -121,12 +121,11 @@ def get_lore_prompt():
 1.  **ИСТОЧНИК — ЗАКОН:** Используй только текст, приведенный ниже. Не добавляй никакой информации извне.
 2.  **НЕ ДОДУМЫВАЙ:** Если в тексте нет прямого ответа на вопрос, честно скажи: "В предоставленных архивах нет точной информации по этому вопросу." В этом случае не добавляй источники.
 3.  **СТИЛЬ:** Отвечай уважительно, в стиле мудрого летописца.
-4.  **РАБОТА С ИЗОБРАЖЕНИЯМИ:** В тексте лора могут встречаться специальные теги вида `[IMAGE_XXX]`. Эти теги **точно указывают на местоположение** изображения в тексте. Если ты считаешь, что изображение напрямую относится к твоему ответу и иллюстрирует его, **обязательно добавь этот тег** в самый конец своего ответа, на новой строке.
-    *   Пример ответа с изображением: `Дварфы - это низкорослый народ, живущий в горах.%%SOURCES%%║...│канал\n[IMAGE_123]`
+4.  **РАБОТА С ИЗОБРАЖЕНИЯМИ:** В тексте лора могут встречаться специальные теги вида `[IMAGE_XXX]`. Эти теги обозначают изображения, которые **относятся к тексту, в конце которого они стоят**. Если ты считаешь, что изображение напрямую иллюстрирует твой ответ, **обязательно добавь этот тег** в самый конец своего ответа, на новой строке.
+    *   Пример ответа с изображением: `Дварфы - это низкорослый народ...%%SOURCES%%║...│канал\n[IMAGE_123]`
     *   Вставляй только ОДИН, самый релевантный тег. Не пиши ничего после тега.
 5.  **ЦИТИРОВАНИЕ ИСТОЧНИКОВ (ОБЯЗАТЕЛЬНО):** После твоего основного ответа, ты **ДОЛЖЕН** добавить специальный разделитель `%%SOURCES%%`. После этого разделителя перечисли через запятую названия каналов, из которых была взята информация. Названия каналов находятся в строках формата `--- НАЧАЛО КАНАЛА: [Имя канала] ---`.
     *   Пример формата: `Ответ на вопрос.%%SOURCES%%║🌟│астромантия, ║🧬│виды-разумных-сущностей`
-    *   Если информация взята из одного канала, укажи только его.
 
 Вот текст, который является твоей единственной базой знаний:
 --- НАЧАЛО ДОКУМЕНТА С ЛОРОМ ---
@@ -294,14 +293,7 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     image_map = {}
     downloaded_images_count = 0
     
-    channels_to_parse = []
-    for channel_id in channel_ids:
-        channel = bot.get_channel(channel_id)
-        if channel and (isinstance(channel, discord.TextChannel) or isinstance(channel, discord.ForumChannel)):
-            channels_to_parse.append(channel)
-        else:
-            print(f"Предупреждение: Канал с ID {channel_id} не найден или его тип не поддерживается.")
-
+    channels_to_parse = [bot.get_channel(cid) for cid in channel_ids if bot.get_channel(cid) is not None]
     sorted_channels = sorted(channels_to_parse, key=lambda c: c.position)
 
     for channel in sorted_channels:
@@ -310,25 +302,21 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         async def parse_message(message):
             nonlocal full_lore_text, total_messages_count, image_id_counter, image_map, downloaded_images_count
             
-            message_text_content = ""
+            # Собираем весь текстовый контент из сообщения в одну переменную
+            current_message_text = ""
             if message.content:
-                message_text_content += message.content
+                current_message_text += message.content
             
             if message.embeds:
                 for embed in message.embeds:
-                    if embed.title: message_text_content += f"\n**{embed.title}**\n"
-                    if embed.description: message_text_content += embed.description + "\n"
-                    for field in embed.fields: message_text_content += f"**{field.name}**\n{field.value}\n"
-            
-            # --- НОВАЯ ИСПРАВЛЕННАЯ ЛОГИКА С МАРКЕРОМ %i% ---
-            if message.attachments and '%i%' in message_text_content:
-                image_attachments = [att for att in message.attachments if att.content_type and att.content_type.startswith('image/')]
-                
-                # Заменяем каждый маркер %i% на уникальный тег [IMAGE_XX]
-                for attachment in image_attachments:
-                    if '%i%' not in message_text_content:
-                        break # Останавливаемся, если маркеров меньше, чем картинок
+                    if embed.title: current_message_text += f"\n**{embed.title}**\n"
+                    if embed.description: current_message_text += embed.description + "\n"
+                    for field in embed.fields: current_message_text += f"**{field.name}**\n{field.value}\n"
 
+            # Обрабатываем все прикрепленные изображения и добавляем их теги в конец текста
+            if message.attachments:
+                image_attachments = [att for att in message.attachments if att.content_type and att.content_type.startswith('image/')]
+                for attachment in image_attachments:
                     image_id = f"IMAGE_{image_id_counter}"
                     file_extension = attachment.filename.split('.')[-1] if '.' in attachment.filename else 'png'
                     new_filename = f"{image_id}.{file_extension}"
@@ -336,16 +324,17 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                     
                     try:
                         await attachment.save(save_path)
-                        # Заменяем ПЕРВЫЙ найденный маркер на готовый тег
-                        message_text_content = message_text_content.replace('%i%', f'[IMAGE_{image_id_counter}]', 1)
+                        # Добавляем тег в конец текстового блока текущего сообщения
+                        current_message_text += f" [IMAGE_{image_id_counter}]"
                         image_map[image_id] = new_filename
                         image_id_counter += 1
                         downloaded_images_count += 1
                     except Exception as e:
                         print(f"Не удалось сохранить изображение {attachment.filename}: {e}")
 
-            if message_text_content.strip() != "":
-                full_lore_text += message_text_content + "\n\n"
+            # Добавляем итоговый блок (текст + теги) в общий файл, только если в нем есть контент
+            if current_message_text.strip():
+                full_lore_text += current_message_text.strip() + "\n\n"
                 total_messages_count += 1
 
         if isinstance(channel, discord.ForumChannel):
@@ -395,7 +384,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         
     except Exception as e:
         await interaction.followup.send(f"Произошла критическая ошибка при записи или отправке файла: {e}", ephemeral=True)
-
 
 @bot.tree.command(name="optimize_post", description="Улучшает РП-пост, принимая текст и уровень улучшения.")
 @app_commands.describe(
@@ -530,4 +518,3 @@ async def about(interaction: discord.Interaction):
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
-
