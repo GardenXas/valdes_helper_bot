@@ -17,10 +17,8 @@ import string
 from datetime import datetime, time, timezone
 import sys
 import asyncio
-import pytesseract # <-- НОВЫЙ ИМПОРТ
-
-# Если Tesseract не добавлен в PATH на Windows, раскомментируйте и укажите путь:
-# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+import pytesseract
+from fpdf import FPDF # <-- НОВЫЙ ИМПОРТ
 
 # Загрузка переменных окружения из файла .env
 load_dotenv()
@@ -55,7 +53,7 @@ def load_lore_from_file():
         print("КРИТИЧЕСКАЯ ОШИБКА: Файл 'file.txt' не найден.")
         VALDES_LORE = "Лор не был загружен из-за отсутствия файла."
 
-# --- 3. СИСТЕМНЫЕ ПРОМПТЫ ---
+# --- 3. СИСТЕМНЫЕ ПРОМПТЫ (без изменений) ---
 def get_optimizer_prompt(level):
     """Возвращает системный промпт для оптимизации РП-постов."""
     return f"""
@@ -132,7 +130,7 @@ def get_lore_prompt():
 --- КОНЕЦ ДОКУМЕНТА С ЛОРОМ ---
 """
 
-# --- 4. ВСПОМОГАТЕЛЬНЫЙ КОД (keep_alive, UI, работа с кодом доступа) ---
+# --- 4. ВСПОМОГАТЕЛЬНЫЙ КОД (без изменений) ---
 app = Flask('')
 @app.route('/')
 def home(): return "Bot is alive and running!"
@@ -182,14 +180,14 @@ def load_daily_code():
     save_daily_code(new_code)
     print(f"Сгенерирован новый код на сегодня: {DAILY_ACCESS_CODE}")
 
-# --- 5. НАСТРОЙКА БОТА ---
+# --- 5. НАСТРОЙКА БОТА (без изменений) ---
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
 intents.guilds = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- 6. УНИВЕРСАЛЬНАЯ ФУНКЦИЯ И ЕЖЕДНЕВНАЯ ЗАДАЧА ГЕНЕРАЦИИ КОДА ---
+# --- 6. ЗАДАЧИ И СОБЫТИЯ (без изменений) ---
 async def send_access_code_to_admin_channel(code: str, title: str, description: str):
     """Отправляет эмбед с кодом доступа на админский сервер."""
     try:
@@ -251,9 +249,22 @@ async def on_ready():
 
 # --- 7. КОМАНДЫ БОТА ---
 
-@bot.tree.command(name="update_lore", description="[АДМИН] Собирает лор из заданных каналов и обновляет файл.")
+# --- НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ПРЕОБРАЗОВАНИЯ MARKDOWN ---
+def simple_markdown_to_html(text: str) -> str:
+    """Преобразует базовый Discord Markdown в HTML для FPDF."""
+    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    text = text.replace('**', '<b>').replace('__', '<u>').replace('*', '<i>')
+    # FPDF не поддерживает вложенность, поэтому закроем теги просто
+    text = text.replace('<b>', '<b>', 1).replace('<b>', '</b>', 1)
+    text = text.replace('<u>', '<u>', 1).replace('<u>', '</u>', 1)
+    text = text.replace('<i>', '<i>', 1).replace('<i>', '</i>', 1)
+    return text.replace('\n', '<br/>')
+
+# --- ЗНАЧИТЕЛЬНО ИЗМЕНЕННАЯ КОМАНДА ---
+@bot.tree.command(name="update_lore", description="[АДМИН] Собирает лор из каналов в единый PDF-файл.")
 @app_commands.describe(access_code="Ежедневный код доступа для подтверждения")
 async def update_lore(interaction: discord.Interaction, access_code: str):
+    # --- Проверки доступа (без изменений) ---
     is_owner = str(interaction.user.id) == OWNER_USER_ID
     is_admin = interaction.user.guild_permissions.administrator
 
@@ -281,10 +292,21 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         await interaction.followup.send("❌ **Ошибка конфигурации:** Список ID каналов в .env пуст.", ephemeral=True)
         return
 
-    full_lore_text = ""
+    # --- Инициализация PDF ---
+    pdf = FPDF()
+    try:
+        pdf.add_font('DejaVu', '', 'DejaVuSans.ttf', uni=True)
+    except RuntimeError:
+        await interaction.followup.send("❌ **Критическая ошибка:** Файл шрифта `DejaVuSans.ttf` не найден рядом с `main.py`. Загрузите его на сервер.", ephemeral=True)
+        return
+    
+    pdf.set_font('DejaVu', '', 12)
+    
+    # --- Переменные для сбора данных ---
+    full_lore_text_for_memory = "" # Для команды /ask_lore
     parsed_channels_count = 0
     total_messages_count = 0
-    total_images_count = 0 # <-- СЧЕТЧИК ИЗОБРАЖЕНИЙ
+    total_images_count = 0
     
     channels_to_parse = []
     for channel_id in channel_ids:
@@ -296,91 +318,123 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
 
     sorted_channels = sorted(channels_to_parse, key=lambda c: c.position)
 
+    # --- Главный цикл обработки ---
     for channel in sorted_channels:
-        full_lore_text += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
+        pdf.add_page()
+        pdf.set_font('DejaVu', 'B', 16)
+        pdf.cell(0, 10, f'Канал: {channel.name}', 0, 1, 'C')
+        pdf.ln(10)
         
-        async def parse_message(message):
-            nonlocal full_lore_text, total_messages_count, total_images_count
+        full_lore_text_for_memory += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
+        
+        async def process_message(message):
+            nonlocal full_lore_text_for_memory, total_messages_count, total_images_count
             content_found = False
-            # Парсинг текста и эмбедов (как и раньше)
+            
+            # 1. ОБРАБОТКА ТЕКСТА И ЭМБЕДОВ
             if message.content:
-                full_lore_text += message.content + "\n\n"
+                full_lore_text_for_memory += message.content + "\n\n"
+                pdf.set_font('DejaVu', '', 12)
+                pdf.write_html(simple_markdown_to_html(message.content))
+                pdf.ln(5)
                 content_found = True
+            
             if message.embeds:
                 for embed in message.embeds:
-                    if embed.title: full_lore_text += f"**{embed.title}**\n"
-                    if embed.description: full_lore_text += embed.description + "\n"
-                    for field in embed.fields: full_lore_text += f"**{field.name}**\n{field.value}\n"
-                    full_lore_text += "\n"
+                    if embed.title:
+                        full_lore_text_for_memory += f"**{embed.title}**\n"
+                        pdf.set_font('DejaVu', 'B', 14)
+                        pdf.write_html(f"<b>{simple_markdown_to_html(embed.title)}</b>")
+                        pdf.ln(2)
+                    if embed.description:
+                        full_lore_text_for_memory += embed.description + "\n"
+                        pdf.set_font('DejaVu', '', 12)
+                        pdf.write_html(simple_markdown_to_html(embed.description))
+                        pdf.ln(4)
+                    for field in embed.fields:
+                        full_lore_text_for_memory += f"**{field.name}**\n{field.value}\n"
+                        pdf.set_font('DejaVu', 'B', 12)
+                        pdf.write_html(f"<b>{simple_markdown_to_html(field.name)}</b>")
+                        pdf.ln(1)
+                        pdf.set_font('DejaVu', '', 12)
+                        pdf.write_html(simple_markdown_to_html(field.value))
+                        pdf.ln(4)
+                    full_lore_text_for_memory += "\n"
                 content_found = True
             
-            # --- НАЧАЛО НОВОГО БЛОКА: ОБРАБОТКА ИЗОБРАЖЕНИЙ ---
+            # 2. ОБРАБОТКА ИЗОБРАЖЕНИЙ
             if message.attachments:
                 for attachment in message.attachments:
-                    # Проверяем, что файл - изображение
                     if attachment.content_type and attachment.content_type.startswith('image/'):
                         try:
-                            # Читаем изображение в байты
                             image_bytes = await attachment.read()
-                            # Открываем изображение с помощью Pillow
-                            image = Image.open(io.BytesIO(image_bytes))
+                            img = Image.open(io.BytesIO(image_bytes))
                             
-                            # Распознаем текст с помощью Tesseract (для русского и английского)
-                            extracted_text = pytesseract.image_to_string(image, lang='rus+eng')
+                            # Добавляем распознанный текст в лор для /ask_lore
+                            ocr_text = pytesseract.image_to_string(img, lang='rus+eng')
+                            if ocr_text.strip():
+                                full_lore_text_for_memory += f"--- Начало текста из изображения: {attachment.filename} ---\n{ocr_text.strip()}\n--- Конец текста ---\n\n"
+
+                            # Вставляем изображение в PDF
+                            page_width = pdf.w - pdf.l_margin - pdf.r_margin
+                            ratio = img.height / img.width
+                            img_width = page_width
+                            img_height = page_width * ratio
                             
-                            if extracted_text.strip():
-                                full_lore_text += f"--- Начало текста из изображения: {attachment.filename} ---\n"
-                                full_lore_text += extracted_text.strip() + "\n"
-                                full_lore_text += f"--- Конец текста из изображения: {attachment.filename} ---\n\n"
-                                content_found = True
-                                total_images_count += 1
+                            pdf.image(io.BytesIO(image_bytes), w=img_width, h=img_height)
+                            pdf.ln(5)
+
+                            total_images_count += 1
+                            content_found = True
                         except Exception as e:
                             print(f"Не удалось обработать изображение {attachment.filename}: {e}")
-            # --- КОНЕЦ НОВОГО БЛОКА ---
-
+            
             if content_found:
                 total_messages_count += 1
+                pdf.ln(5) # Добавляем отступ между сообщениями
 
+        # Итерация по сообщениям в каналах и тредах
         if isinstance(channel, discord.ForumChannel):
-            active_threads = channel.threads
-            archived_threads = []
-            try:
-                async for thread in channel.archived_threads(limit=None):
-                    archived_threads.append(thread)
-            except Exception as e:
-                print(f"Не удалось получить архивные ветки для канала '{channel.name}': {e}")
-            
-            all_threads = active_threads + archived_threads
+            all_threads = channel.threads + [t async for t in channel.archived_threads(limit=None)]
             sorted_threads = sorted(all_threads, key=lambda t: t.created_at)
-
             for thread in sorted_threads:
-                full_lore_text += f"--- Начало публикации: {thread.name} ---\n\n"
+                pdf.set_font('DejaVu', 'I', 14)
+                pdf.cell(0, 10, f"--- Публикация: {thread.name} ---", 0, 1, 'L')
+                pdf.ln(5)
+                full_lore_text_for_memory += f"--- Начало публикации: {thread.name} ---\n\n"
                 async for message in thread.history(limit=500, oldest_first=True):
-                    await parse_message(message) # Используем await, так как parse_message теперь асинхронна
-                full_lore_text += f"--- Конец публикации: {thread.name} ---\n\n"
+                    await process_message(message)
+                full_lore_text_for_memory += f"--- Конец публикации: {thread.name} ---\n\n"
         else:
             async for message in channel.history(limit=500, oldest_first=True):
-                await parse_message(message) # Используем await
+                await process_message(message)
 
-        full_lore_text += f"--- КОНЕЦ КАНАЛА: {channel.name} ---\n"
+        full_lore_text_for_memory += f"--- КОНЕЦ КАНАЛА: {channel.name} ---\n"
         parsed_channels_count += 1
 
+    # --- Сохранение и отправка результатов ---
     try:
+        # Сохраняем PDF
+        pdf_output_filename = "lore.pdf"
+        pdf.output(pdf_output_filename)
+        
+        # Сохраняем текстовый файл для /ask_lore
         with open("file.txt", "w", encoding="utf-8") as f:
-            f.write(full_lore_text)
+            f.write(full_lore_text_for_memory)
         
-        load_lore_from_file()
-        file_size = os.path.getsize("file.txt") / 1024
+        load_lore_from_file() # Обновляем лор в памяти
         
-        embed = discord.Embed(title="✅ Лор успешно обновлен!", description="Файл `file.txt` был перезаписан и прикреплен к этому сообщению для проверки.", color=discord.Color.green())
+        pdf_size_mb = os.path.getsize(pdf_output_filename) / (1024 * 1024)
+        
+        embed = discord.Embed(title="✅ Лор успешно собран в PDF!", description=f"Файл `{pdf_output_filename}` был создан и прикреплен к этому сообщению.", color=discord.Color.green())
         embed.add_field(name="Обработано каналов", value=str(parsed_channels_count), inline=True)
         embed.add_field(name="Собрано сообщений", value=str(total_messages_count), inline=True)
-        embed.add_field(name="Распознано изображений", value=str(total_images_count), inline=True) # <-- НОВОЕ ПОЛЕ
-        embed.add_field(name="Размер файла", value=f"{file_size:.2f} КБ", inline=False)
+        embed.add_field(name="Вставлено изображений", value=str(total_images_count), inline=True)
+        embed.add_field(name="Размер PDF", value=f"{pdf_size_mb:.2f} МБ", inline=True)
         
         await interaction.followup.send(
             embed=embed,
-            file=discord.File("file.txt"),
+            file=discord.File(pdf_output_filename),
             ephemeral=True
         )
 
@@ -394,6 +448,7 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         await interaction.followup.send(f"Произошла критическая ошибка при записи или отправке файла: {e}", ephemeral=True)
 
 
+# --- ОСТАЛЬНЫЕ КОМАНДЫ (без изменений) ---
 @bot.tree.command(name="optimize_post", description="Улучшает РП-пост, принимая текст и уровень улучшения.")
 @app_commands.describe(
     post_text="Текст вашего поста для улучшения.",
