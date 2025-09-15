@@ -37,7 +37,7 @@ if not all([DISCORD_TOKEN, GEMINI_API_KEY, MAIN_GUILD_ID, ADMIN_GUILD_ID, CODE_C
 
 # Настройка API Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel('gemini-2.5-flash')
+gemini_model = genai.GenerativeModel('gemini-1.5-flash')
 
 # --- 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И ФУНКЦИИ ДЛЯ ЛОРА ---
 VALDES_LORE = ""
@@ -121,8 +121,8 @@ def get_lore_prompt():
 1.  **ИСТОЧНИК — ЗАКОН:** Используй только текст, приведенный ниже. Не добавляй никакой информации извне.
 2.  **НЕ ДОДУМЫВАЙ:** Если в тексте нет прямого ответа на вопрос, честно скажи: "В предоставленных архивах нет точной информации по этому вопросу." В этом случае не добавляй источники.
 3.  **СТИЛЬ:** Отвечай уважительно, в стиле мудрого летописца.
-4.  **РАБОТА С ИЗОБРАЖЕНИЯМИ:** В тексте лора могут встречаться специальные теги вида `[IMAGE_XXX]`. Эти теги обозначают изображения, которые **относятся к тексту, в конце которого они стоят**. Если ты считаешь, что изображение напрямую иллюстрирует твой ответ, **обязательно добавь этот тег** в самый конец своего ответа, на новой строке.
-    *   Пример ответа с изображением: `Дварфы - это низкорослый народ...%%SOURCES%%║...│канал\n[IMAGE_123]`
+4.  **РАБОТА С ИЗОБРАЖЕНИЯМИ:** В тексте лора могут встречаться специальные теги вида `[IMAGE_XXX]`. Эти теги **точно указывают на местоположение** изображения в тексте. Если ты считаешь, что изображение напрямую относится к твоему ответу и иллюстрирует его, **обязательно добавь этот тег** в самый конец своего ответа, на новой строке.
+    *   Пример ответа с изображением: `Дварфы - это низкорослый народ, живущий в горах.%%SOURCES%%║...│канал\n[IMAGE_123]`
     *   Вставляй только ОДИН, самый релевантный тег. Не пиши ничего после тега.
 5.  **ЦИТИРОВАНИЕ ИСТОЧНИКОВ (ОБЯЗАТЕЛЬНО):** После твоего основного ответа, ты **ДОЛЖЕН** добавить специальный разделитель `%%SOURCES%%`. После этого разделителя перечисли через запятую названия каналов, из которых была взята информация. Названия каналов находятся в строках формата `--- НАЧАЛО КАНАЛА: [Имя канала] ---`.
     *   Пример формата: `Ответ на вопрос.%%SOURCES%%║🌟│астромантия, ║🧬│виды-разумных-сущностей`
@@ -309,55 +309,51 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         
         async def parse_message(message):
             nonlocal full_lore_text, total_messages_count, image_id_counter, image_map, downloaded_images_count
-
-            current_message_text = ""
-            content_found = False
-
+            
+            message_text_content = ""
             if message.content:
-                current_message_text += message.content
-                content_found = True
+                message_text_content += message.content
             
             if message.embeds:
                 for embed in message.embeds:
-                    if embed.title: current_message_text += f"\n**{embed.title}**\n"
-                    if embed.description: current_message_text += embed.description + "\n"
-                    for field in embed.fields: current_message_text += f"**{field.name}**\n{field.value}\n"
-                content_found = True
-
-            if content_found or message.attachments:
-                if message.attachments:
-                    image_attachments = [att for att in message.attachments if att.content_type and att.content_type.startswith('image/')]
-                    for attachment in image_attachments:
-                        image_id = f"IMAGE_{image_id_counter}"
-                        file_extension = attachment.filename.split('.')[-1] if '.' in attachment.filename else 'png'
-                        new_filename = f"{image_id}.{file_extension}"
-                        save_path = os.path.join(LORE_IMAGES_DIR, new_filename)
-                        
-                        try:
-                            await attachment.save(save_path)
-                            current_message_text += f" [{image_id}]"
-                            image_map[image_id] = new_filename
-                            image_id_counter += 1
-                            downloaded_images_count += 1
-                        except Exception as e:
-                            print(f"Не удалось сохранить изображение {attachment.filename}: {e}")
+                    if embed.title: message_text_content += f"\n**{embed.title}**\n"
+                    if embed.description: message_text_content += embed.description + "\n"
+                    for field in embed.fields: message_text_content += f"**{field.name}**\n{field.value}\n"
+            
+            # --- НОВАЯ ИСПРАВЛЕННАЯ ЛОГИКА С МАРКЕРОМ %i% ---
+            if message.attachments and '%i%' in message_text_content:
+                image_attachments = [att for att in message.attachments if att.content_type and att.content_type.startswith('image/')]
                 
-                full_lore_text += current_message_text + "\n\n"
+                # Заменяем каждый маркер %i% на уникальный тег [IMAGE_XX]
+                for attachment in image_attachments:
+                    if '%i%' not in message_text_content:
+                        break # Останавливаемся, если маркеров меньше, чем картинок
+
+                    image_id = f"IMAGE_{image_id_counter}"
+                    file_extension = attachment.filename.split('.')[-1] if '.' in attachment.filename else 'png'
+                    new_filename = f"{image_id}.{file_extension}"
+                    save_path = os.path.join(LORE_IMAGES_DIR, new_filename)
+                    
+                    try:
+                        await attachment.save(save_path)
+                        # Заменяем ПЕРВЫЙ найденный маркер на готовый тег
+                        message_text_content = message_text_content.replace('%i%', f'[IMAGE_{image_id_counter}]', 1)
+                        image_map[image_id] = new_filename
+                        image_id_counter += 1
+                        downloaded_images_count += 1
+                    except Exception as e:
+                        print(f"Не удалось сохранить изображение {attachment.filename}: {e}")
+
+            if message_text_content.strip() != "":
+                full_lore_text += message_text_content + "\n\n"
                 total_messages_count += 1
 
         if isinstance(channel, discord.ForumChannel):
             active_threads = channel.threads
-            archived_threads = []
-            try:
-                async for thread in channel.archived_threads(limit=None):
-                    archived_threads.append(thread)
-            except Exception as e:
-                print(f"Не удалось получить архивные ветки для канала '{channel.name}': {e}")
-            
-            all_threads = active_threads + archived_threads
-            sorted_threads = sorted(all_threads, key=lambda t: t.created_at)
+            archived_threads = [thread async for thread in channel.archived_threads(limit=None)]
+            all_threads = sorted(active_threads + archived_threads, key=lambda t: t.created_at)
 
-            for thread in sorted_threads:
+            for thread in all_threads:
                 full_lore_text += f"--- Начало публикации: {thread.name} ---\n\n"
                 async for message in thread.history(limit=500, oldest_first=True):
                     await parse_message(message)
@@ -399,6 +395,7 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         
     except Exception as e:
         await interaction.followup.send(f"Произошла критическая ошибка при записи или отправке файла: {e}", ephemeral=True)
+
 
 @bot.tree.command(name="optimize_post", description="Улучшает РП-пост, принимая текст и уровень улучшения.")
 @app_commands.describe(
@@ -459,7 +456,7 @@ async def ask_lore(interaction: discord.Interaction, question: str):
         prompt = get_lore_prompt()
         response = await gemini_model.generate_content_async([prompt, f"\n\nВопрос игрока: {question}"])
         raw_text = response.text.strip()
-
+        
         image_file_to_send = None
         
         image_tag_match = re.search(r'\[(IMAGE_\d+)\]', raw_text)
@@ -476,38 +473,27 @@ async def ask_lore(interaction: discord.Interaction, question: str):
                     image_path = os.path.join(LORE_IMAGES_DIR, filename)
                     if os.path.exists(image_path):
                         image_file_to_send = discord.File(image_path, filename="image.png")
-                    else:
-                        print(f"ПРЕДУПРЕЖДЕНИЕ: Файл изображения не найден для {image_id} по пути {image_path}")
-                else:
-                    print(f"ПРЕДУПРЕЖДЕНИЕ: ID изображения {image_id} не найден в {IMAGE_MAP_FILE}")
-
             except (FileNotFoundError, json.JSONDecodeError) as e:
-                print(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось загрузить или прочитать файл {IMAGE_MAP_FILE}: {e}")
+                print(f"ОШИБКА: Не удалось загрузить {IMAGE_MAP_FILE}: {e}")
 
-        answer_text = raw_text
-        sources_text = ""
-        if "%%SOURCES%%" in raw_text:
-            parts = raw_text.split("%%SOURCES%%")
-            answer_text = parts[0].strip()
-            sources_text = parts[1].strip()
+        answer_text, sources_text = (raw_text.split("%%SOURCES%%") + [""])[:2]
+        answer_text = answer_text.strip()
+        sources_text = sources_text.strip()
 
         embed = discord.Embed(title="📜 Ответ из архивов Вальдеса", description=answer_text, color=discord.Color.blue())
         embed.add_field(name="Ваш запрос:", value=question, inline=False)
-        
         if sources_text:
             embed.add_field(name="Источники:", value=sources_text, inline=False)
-            
         if image_file_to_send:
-            embed.set_image(url=f"attachment://image.png")
+            embed.set_image(url="attachment://image.png")
             
         embed.set_footer(text=f"Ответил Хранитель знаний | Запросил: {interaction.user.display_name}")
         
         await interaction.followup.send(embed=embed, file=image_file_to_send if image_file_to_send else discord.utils.MISSING)
-
     except Exception as e:
         print(f"Произошла ошибка при обработке запроса /ask_lore: {e}")
-        error_embed = discord.Embed(title="🚫 Ошибка в архиве", description="Хранитель знаний не смог найти ответ на ваш вопрос из-за непредвиденной ошибки.", color=discord.Color.dark_red())
-        await interaction.followup.send(embed=error_embed, ephemeral=True)
+        await interaction.followup.send(embed=discord.Embed(title="🚫 Ошибка в архиве", description="Хранитель знаний не смог найти ответ.", color=discord.Color.dark_red()), ephemeral=True)
+
 
 @bot.tree.command(name="help", description="Показывает информацию обо всех доступных командах.")
 async def help(interaction: discord.Interaction):
@@ -544,4 +530,3 @@ async def about(interaction: discord.Interaction):
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
-
