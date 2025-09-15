@@ -33,7 +33,10 @@ CODE_CHANNEL_ID = os.getenv("CODE_CHANNEL_ID")
 OWNER_USER_ID = os.getenv("OWNER_USER_ID")
 LORE_CHANNEL_IDS = os.getenv("LORE_CHANNEL_IDS")
 
-LORE_PDF_PATH = "lore.pdf" # Константа для пути к PDF
+# <<<--- НОВОЕ: Пути к файлам вынесены в константы
+LORE_PDF_PATH = "lore.pdf"
+IMAGE_MAP_PATH = "image_map.json"
+# --- НОВОЕ --->
 
 if not all([DISCORD_TOKEN, GEMINI_API_KEY, MAIN_GUILD_ID, ADMIN_GUILD_ID, CODE_CHANNEL_ID, OWNER_USER_ID, LORE_CHANNEL_IDS]):
     raise ValueError("КРИТИЧЕСКАЯ ОШИБКА: Один из ключей или ID не найден в .env")
@@ -55,7 +58,7 @@ class CharacterSanitizer:
             font = TTFont(font_path)
             self.supported_chars = set(key for table in font['cmap'].tables if table.isUnicode() for key in table.cmap.keys())
             if not self.supported_chars: raise RuntimeError("Шрифт не содержит Unicode-совместимой таблицы символов.")
-            whitelist = {'═', '─', '║', '│', '✅', '❌', '🔑', '⚙️', '▶️', '📝', '📜', '✨', '🚫', '⚠️', '🌟', '📔', '🧬'}
+            whitelist = {'═', '─', '║', '│', '✅', '❌', '🔑', '⚙️', '▶️', '📝', '📜', '✨', '🚫', '⚠️', '🌟', '📔', '🧬', '[', ']', ':', '_'}
             self.supported_chars.update(ord(c) for c in "".join(whitelist))
         except Exception as e:
             raise RuntimeError(f"Не удалось обработать файл шрифта '{font_path}': {e}") from e
@@ -117,23 +120,32 @@ def get_optimizer_prompt(level):
 Верни ТОЛЬКО готовый текст поста или сообщение об ошибке. Никаких предисловий.
 """
 
+# <<<--- НОВОЕ: Полностью новый промпт для Хранителя
 def get_lore_prompt():
     return """
 Ты — Хранитель знаний мира 'Вальдес'. Тебе предоставлен PDF-документ, содержащий весь лор проекта.
 
-**Твоя главная задача:** Дать максимально точный и полный ответ на вопрос игрока, основываясь на всей информации из документа (текст и изображения).
+**Твоя главная задача:** Дать максимально точный и полный ответ на вопрос игрока, основываясь на тексте из документа.
 
 ---
 **КЛЮЧЕВЫЕ ПРАВИЛА АНАЛИЗА И ОТВЕТА:**
 
-1.  **ССЫЛАЙСЯ НА ИСТОЧНИК:** В документе каждый фрагмент информации предваряется строкой вида `Источник: Канал 'Название канала'`. В своем ответе ты **ОБЯЗАН** указать, из какого канала была взята информация. Пример: "Согласно информации из канала 'Королевства', флаг Утгарда..."
+1.  **НАЙДИ РЕЛЕВАНТНЫЙ ТЕКСТ:** Внимательно изучи весь документ и найди фрагмент текста, который лучше всего отвечает на вопрос игрока.
 
-2.  **СВЯЗЫВАЙ ТЕКСТ И ИЗОБРАЖЕНИЯ:** Учитывай контекст. Изображение, расположенное сразу после блока текста, с высокой вероятностью относится к этому тексту. Если в канале 'Королевство Утгард и Нидавелир' после описания королевской гвардии идет изображение рыцаря, считай, что это и есть гвардеец.
+2.  **РАБОТА С ТЕГАМИ ИЗОБРАЖЕНИЙ:**
+    *   В документе некоторые блоки текста содержат специальный тег для изображений, например: `[ref_img: 112233445566778899]`.
+    *   Этот тег — не для тебя, а для бота. Он означает, что к данному тексту прикреплена картинка.
+    *   Если найденный тобой текст содержит такой тег, ты **ОБЯЗАН** включить его в свой ответ **БЕЗ ИЗМЕНЕНИЙ**, в том же виде.
 
-3.  **ДЕЛАЙ ЛОГИЧЕСКИЕ ВЫВОДЫ:** Не бойся делать очевидные логические заключения. Если текст описывает "символ королевства", а на прикрепленном изображении есть щит с гербом, опиши этот герб как символ королевства. Не ищи только прямое упоминание "флаг" или "герб".
+3.  **ССЫЛАЙСЯ НА ИСТОЧНИК:** В документе каждый фрагмент информации предваряется строкой вида `Источник: Канал 'Название канала'`. В своем ответе ты **ОБЯЗАН** указать, из какого канала была взята информация. Пример: "Согласно информации из канала 'Королевства', ..."
 
-4.  **БУДЬ ЧЕСТНЫМ:** Если в документе действительно нет ответа даже с учетом контекста, честно скажи об этом.
+4.  **БУДЬ ЧЕСТНЫМ:** Если в документе действительно нет ответа на вопрос, честно скажи об этом. Не выдумывай информацию.
+
+**Пример твоего идеального ответа (если был задан вопрос о Федерации Джура):**
+
+"Согласно информации из канала 'Королевства', Федерация Джура — это страна, обитающая на востоке. Она является самой молодой из всех стран. [ref_img: 998877665544332211]"
 """
+# --- НОВОЕ --->
 
 def robust_markdown_to_html(text: str) -> str:
     text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
@@ -243,7 +255,8 @@ async def before_send_daily_code_task():
     await bot.wait_until_ready()
     print("Цикл отправки ежедневного кода готов к запуску.")
 
-@bot.tree.command(name="update_lore", description="[АДМИН] Собирает весь лор в PDF и отправляет вам для проверки.")
+# <<<--- НОВОЕ: Полностью переписанная команда update_lore
+@bot.tree.command(name="update_lore", description="[АДМИН] Собирает лор в PDF, создает карту изображений и отправляет вам.")
 @app_commands.describe(access_code="Ежедневный код доступа")
 async def update_lore(interaction: discord.Interaction, access_code: str):
     if not (interaction.user.id == OWNER_USER_ID or interaction.user.guild_permissions.administrator):
@@ -267,57 +280,58 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     except Exception as e: return await interaction.followup.send(f"❌ **Критическая ошибка со шрифтом:**\n{e}", ephemeral=True)
     
     total_messages_count, total_images_count = 0, 0
+    image_map = {} # Словарь для хранения ID сообщений и URL их изображений
+    
     channels_to_parse = [bot.get_channel(cid) for cid in channel_ids if bot.get_channel(cid)]
     sorted_channels = sorted(channels_to_parse, key=lambda c: c.position)
 
     async with aiohttp.ClientSession() as session:
         async def process_message(message: discord.Message):
-            nonlocal total_messages_count, total_images_count
-            if message.author.bot or (not message.content and not message.attachments and not message.embeds): 
-                return
-
-            pdf.set_fill_color(240, 240, 240)
-            pdf.set_font('Galindo', 'I', 8)
-            channel_name = message.channel.name if hasattr(message.channel, 'name') else "Неизвестный тред"
+            nonlocal total_messages_count, total_images_count, image_map
             
-            sanitized_channel_name = sanitizer.sanitize(f"Источник: Канал '{channel_name}'")
-            pdf.cell(0, 5, sanitized_channel_name, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L', fill=True)
-            pdf.ln(2)
-            
-            if message.content:
-                pdf.set_font('Galindo', '', 12)
-                sanitized_content = sanitizer.sanitize(message.content)
-                pdf.write_html(robust_markdown_to_html(sanitized_content))
-                pdf.ln(5)
-            
+            # --- Собираем все URL изображений из сообщения ---
             image_urls = []
             if message.attachments:
                 image_urls.extend(att.url for att in message.attachments if att.content_type and att.content_type.startswith('image/'))
             if message.embeds:
                 image_urls.extend(embed.image.url for embed in message.embeds if embed.image.url)
 
-            for url in image_urls:
-                try:
-                    async with session.get(url) as resp:
-                        if resp.status == 200:
-                            image_bytes = await resp.read()
-                            img = Image.open(io.BytesIO(image_bytes))
-                            page_width = pdf.w - pdf.l_margin - pdf.r_margin
-                            
-                            img_height = page_width * (img.height / img.width)
-                            if pdf.get_y() + img_height > pdf.page_break_trigger:
-                                pdf.add_page()
+            # --- Пропускаем сообщение, если в нем нет ни текста, ни картинок ---
+            if not message.content and not image_urls:
+                return
 
-                            pdf.image(img, w=page_width, h=img_height)
-                            pdf.ln(5)
-                            total_images_count += 1
-                except Exception as e: print(f"Не удалось вставить изображение с URL {url}: {e}")
+            if message.author.bot: return
+
+            # --- Заголовок с каналом ---
+            pdf.set_fill_color(240, 240, 240)
+            pdf.set_font('Galindo', 'I', 8)
+            channel_name = message.channel.name if hasattr(message.channel, 'name') else "Неизвестный тред"
+            sanitized_channel_name = sanitizer.sanitize(f"Источник: Канал '{channel_name}'")
+            pdf.cell(0, 5, sanitized_channel_name, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L', fill=True)
+            pdf.ln(2)
             
+            # --- Обработка текста сообщения ---
+            if message.content:
+                pdf.set_font('Galindo', '', 12)
+                sanitized_content = sanitizer.sanitize(message.content)
+                pdf.write_html(robust_markdown_to_html(sanitized_content))
+                pdf.ln(1) # Уменьшаем отступ
+            
+            # --- Если есть изображения, сохраняем их и вставляем тег в PDF ---
+            if image_urls:
+                image_map[str(message.id)] = image_urls
+                pdf.set_font('Galindo', 'I', 9)
+                pdf.set_text_color(150, 150, 150)
+                pdf.cell(0, 5, sanitizer.sanitize(f"[ref_img: {message.id}]"), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.set_text_color(0, 0, 0)
+                total_images_count += len(image_urls)
+            
+            pdf.ln(4) # Отступ после всего сообщения
             total_messages_count += 1
 
         for channel in sorted_channels:
             if not channel:
-                print(f"ПРЕДУПРЕЖДЕНИЕ: Канал из LORE_CHANNEL_IDS не найден. Возможно, ID неверный или у бота нет доступа.")
+                print(f"ПРЕДУПРЕЖДЕНИЕ: Канал из LORE_CHANNEL_IDS не найден.")
                 continue
             pdf.add_page(); pdf.set_font('Galindo', 'B', 16)
             pdf.cell(0, 10, sanitizer.sanitize(f'Сборник Лора: {channel.name}'), new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C'); pdf.ln(10)
@@ -326,32 +340,36 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                 all_threads = channel.threads + [t async for t in channel.archived_threads(limit=None)]
                 for thread in sorted(all_threads, key=lambda t: t.created_at):
                     pdf.set_font('Galindo', 'B', 14)
-                    pdf.cell(0, 10, sanitizer.sanitize(f"Тема: {thread.name}"), new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L')
-                    pdf.ln(5)
+                    pdf.cell(0, 10, sanitizer.sanitize(f"Тема: {thread.name}"), new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L'); pdf.ln(5)
                     async for message in thread.history(limit=500, oldest_first=True): await process_message(message)
             else:
                 async for message in channel.history(limit=2000, oldest_first=True): await process_message(message)
 
     try:
+        # --- Сохраняем PDF и карту изображений ---
         pdf.output(LORE_PDF_PATH)
+        with open(IMAGE_MAP_PATH, 'w', encoding='utf-8') as f:
+            json.dump(image_map, f, ensure_ascii=False, indent=4)
+        
         pdf_size_mb = os.path.getsize(LORE_PDF_PATH) / (1024 * 1024)
         
         embed = discord.Embed(title="✅ Лор успешно собран!", color=discord.Color.green())
-        embed.add_field(name="Собрано сообщений", value=str(total_messages_count))
-        embed.add_field(name="Вставлено изображений", value=str(total_images_count))
-        embed.add_field(name="Итоговый размер", value=f"{pdf_size_mb:.2f} МБ")
+        embed.description = "Создан `lore.pdf` и `image_map.json`."
+        embed.add_field(name="Обработано сообщений", value=str(total_messages_count))
+        embed.add_field(name="Найдено изображений", value=str(total_images_count))
+        embed.add_field(name="Размер PDF", value=f"{pdf_size_mb:.2f} МБ")
         
         if pdf_size_mb < 8.0:
-            embed.description = "Файл с лором (`lore.pdf`) прикреплен к этому сообщению. Теперь вы можете проверить его содержимое."
             await interaction.followup.send(embed=embed, file=discord.File(LORE_PDF_PATH), ephemeral=True)
         else:
-            embed.description = "⚠️ **Файл слишком большой для отправки в Discord (>8 МБ).** Он был сохранен на сервере, но я не могу его прикрепить. Проверьте содержимое на сервере."
+            embed.description += "\n⚠️ **Файл PDF слишком большой (>8 МБ).** Он сохранен, но не может быть отправлен в Discord."
             await interaction.followup.send(embed=embed, ephemeral=True)
 
     except Exception as e:
         await interaction.followup.send(f"Критическая ошибка при записи или отправке файла: {e}", ephemeral=True)
+# --- НОВОЕ --->
 
-
+# <<<--- НОВОЕ: Полностью переписанная команда ask_lore
 @bot.tree.command(name="ask_lore", description="Задать вопрос по миру, правилам и лору 'Вальдеса'")
 @app_commands.describe(question="Ваш вопрос Хранителю знаний.")
 @app_commands.checks.cooldown(1, 60.0, key=lambda i: i.user.id)
@@ -360,20 +378,42 @@ async def ask_lore(interaction: discord.Interaction, question: str):
     
     if not os.path.exists(LORE_PDF_PATH):
         return await interaction.followup.send("❌ **Ошибка:** Файл лора (`lore.pdf`) не найден. Попросите администратора сгенерировать его командой `/update_lore`.")
+    if not os.path.exists(IMAGE_MAP_PATH):
+        return await interaction.followup.send("❌ **Ошибка:** Файл карты изображений (`image_map.json`) не найден. Запустите `/update_lore`.")
 
     lore_file = None
     try:
-        await interaction.edit_original_response(content="*Хранитель знаний загружает архивы... (Это может занять время в зависимости от размера лора)*")
-        lore_file = genai.upload_file(path=LORE_PDF_PATH, display_name="Архив Вальдеса")
-        print(f"Файл {LORE_PDF_PATH} успешно загружен на сервер, URI: {lore_file.uri}")
+        # --- Загружаем карту изображений ---
+        with open(IMAGE_MAP_PATH, 'r', encoding='utf-8') as f:
+            image_map = json.load(f)
 
+        await interaction.edit_original_response(content="*Хранитель знаний загружает архивы...*")
+        lore_file = genai.upload_file(path=LORE_PDF_PATH, display_name="Архив Вальдеса")
+        
         await interaction.edit_original_response(content="*Ищу ответ в архивах...*")
         prompt = get_lore_prompt()
         response = await gemini_model.generate_content_async([prompt, lore_file, f"Вопрос игрока: {question}"])
         
-        embed = discord.Embed(title="📜 Ответ из архивов Вальдеса", description=response.text, color=discord.Color.blue())
+        raw_text = response.text
+        
+        # --- Ищем теги изображений в ответе ИИ ---
+        image_ids = re.findall(r'\[ref_img: (\d+)]', raw_text)
+        
+        # --- Очищаем текст от тегов для пользователя ---
+        clean_text = re.sub(r'\s*\[ref_img: \d+]', '', raw_text).strip()
+
+        embed = discord.Embed(title="📜 Ответ из архивов Вальдеса", description=clean_text, color=discord.Color.blue())
         embed.add_field(name="Ваш запрос:", value=question, inline=False)
         embed.set_footer(text=f"Ответил Хранитель знаний | Запросил: {interaction.user.display_name}")
+
+        # --- Если найдены ID изображений, прикрепляем первое из них ---
+        if image_ids:
+            first_id = image_ids[0]
+            if first_id in image_map and image_map[first_id]:
+                first_image_url = image_map[first_id][0]
+                embed.set_image(url=first_image_url)
+                print(f"Прикреплено изображение: {first_image_url}")
+
         await interaction.edit_original_response(content=None, embed=embed)
 
     except Exception as e:
@@ -386,6 +426,7 @@ async def ask_lore(interaction: discord.Interaction, question: str):
                 print(f"Загруженный файл {lore_file.name} удален с сервера.")
             except Exception as e:
                 print(f"Не удалось удалить файл {lore_file.name} с сервера: {e}")
+# --- НОВОЕ --->
 
 
 @bot.tree.command(name="optimize_post", description="Улучшает РП-пост.")
@@ -437,7 +478,7 @@ async def help(interaction: discord.Interaction):
     embed.add_field(name="/ask_lore", value="Задает вопрос Хранителю знаний (перезарядка 1 мин.).", inline=False)
     embed.add_field(name="/about", value="Показывает информацию о боте и его создателе.", inline=False)
     embed.add_field(name="/help", value="Показывает это справочное сообщение.", inline=False)
-    embed.add_field(name="/update_lore", value="**[АДМИН]** Собирает весь лор в PDF и отправляет его вам для проверки.", inline=False)
+    embed.add_field(name="/update_lore", value="**[АДМИН]** Собирает весь лор в PDF, создает карту изображений и отправляет его вам.", inline=False)
     embed.set_footer(text="Ваш верный помощник в мире Вальдеса.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -454,3 +495,4 @@ async def about(interaction: discord.Interaction):
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
+
