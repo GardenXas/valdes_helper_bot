@@ -45,7 +45,7 @@ except ValueError:
     raise ValueError("КРИТИЧЕСКАЯ ОШИБКА: CODE_CHANNEL_ID и OWNER_USER_ID должны быть числами.")
 
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel('gemini-2.5-flash')
+gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
 # --- 2. ВСПОМОГАТЕЛЬНЫЕ КЛАССЫ И ФУНКЦИИ ---
 class CharacterSanitizer:
@@ -119,9 +119,20 @@ def get_optimizer_prompt(level):
 
 def get_lore_prompt():
     return """
-Ты — Хранитель знаний мира 'Вальдес'. Тебе предоставлен PDF-документ, содержащий весь лор проекта, включая текст и изображения.
-Твоя задача — внимательно изучить предоставленный файл и дать максимально точный и полный ответ на вопрос игрока, основываясь на всей информации из документа.
-Если в документе нет ответа, честно скажи об этом.
+Ты — Хранитель знаний мира 'Вальдес'. Тебе предоставлен PDF-документ, содержащий весь лор проекта.
+
+**Твоя главная задача:** Дать максимально точный и полный ответ на вопрос игрока, основываясь на всей информации из документа (текст и изображения).
+
+---
+**КЛЮЧЕВЫЕ ПРАВИЛА АНАЛИЗА И ОТВЕТА:**
+
+1.  **ССЫЛАЙСЯ НА ИСТОЧНИК:** В документе каждый фрагмент информации предваряется строкой вида `Источник: Канал 'Название канала'`. В своем ответе ты **ОБЯЗАН** указать, из какого канала была взята информация. Пример: "Согласно информации из канала 'Королевства', флаг Утгарда..."
+
+2.  **СВЯЗЫВАЙ ТЕКСТ И ИЗОБРАЖЕНИЯ:** Учитывай контекст. Изображение, расположенное сразу после блока текста, с высокой вероятностью относится к этому тексту. Если в канале 'Королевство Утгард и Нидавелир' после описания королевской гвардии идет изображение рыцаря, считай, что это и есть гвардеец.
+
+3.  **ДЕЛАЙ ЛОГИЧЕСКИЕ ВЫВОДЫ:** Не бойся делать очевидные логические заключения. Если текст описывает "символ королевства", а на прикрепленном изображении есть щит с гербом, опиши этот герб как символ королевства. Не ищи только прямое упоминание "флаг" или "герб".
+
+4.  **БУДЬ ЧЕСТНЫМ:** Если в документе действительно нет ответа даже с учетом контекста, честно скажи об этом.
 """
 
 def robust_markdown_to_html(text: str) -> str:
@@ -170,7 +181,7 @@ def load_daily_code():
 intents = discord.Intents.default(); intents.message_content = True; intents.guilds = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- 3. ОСНОВНЫЕ КОМАНДЫ БОТА ---
+# --- 3. ОСНОВНЫЕ КОМАНДЫ И СОБЫТИЯ БОТА ---
 @bot.event
 async def on_ready():
     print(f'Бот {bot.user} запущен!');
@@ -179,6 +190,27 @@ async def on_ready():
     try:
         synced = await bot.tree.sync(); print(f"Синхронизировано {len(synced)} команд.")
     except Exception as e: print(f"Ошибка синхронизации: {e}")
+
+@bot.tree.error
+async def on_tree_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.CommandOnCooldown):
+        seconds = int(error.retry_after)
+        minutes = seconds // 60
+        seconds %= 60
+        
+        cooldown_message = f"⏳ Эта команда на перезарядке. Попробуйте снова через "
+        if minutes > 0:
+            cooldown_message += f"{minutes} мин. "
+        if seconds > 0:
+            cooldown_message += f"{seconds} сек."
+
+        await interaction.response.send_message(cooldown_message, ephemeral=True)
+    else:
+        print(f"Необработанная ошибка в slash-команде: {error}")
+        try:
+            await interaction.response.send_message("Произошла неизвестная ошибка при выполнении команды.", ephemeral=True)
+        except discord.errors.InteractionResponded:
+            await interaction.followup.send("Произошла неизвестная ошибка при выполнении команды.", ephemeral=True)
 
 SCHEDULED_TIME = time(hour=4, minute=0, tzinfo=timezone.utc)
 
@@ -230,10 +262,8 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         sanitizer = CharacterSanitizer(font_path)
         pdf.add_font('Galindo', '', font_path)
         pdf.add_font('Galindo', 'B', font_path)
-        # <<< ИСПРАВЛЕНИЕ: Регистрируем курсивные стили, используя обычный шрифт
         pdf.add_font('Galindo', 'I', font_path)
         pdf.add_font('Galindo', 'BI', font_path)
-        # >>> КОНЕЦ ИСПРАВЛЕНИЯ
     except Exception as e: return await interaction.followup.send(f"❌ **Критическая ошибка со шрифтом:**\n{e}", ephemeral=True)
     
     total_messages_count, total_images_count = 0, 0
@@ -243,7 +273,16 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     async with aiohttp.ClientSession() as session:
         async def process_message(message: discord.Message):
             nonlocal total_messages_count, total_images_count
-            if message.author.bot: return
+            if message.author.bot or (not message.content and not message.attachments and not message.embeds): 
+                return
+
+            pdf.set_fill_color(240, 240, 240)
+            pdf.set_font('Galindo', 'I', 8)
+            channel_name = message.channel.name if hasattr(message.channel, 'name') else "Неизвестный тред"
+            
+            sanitized_channel_name = sanitizer.sanitize(f"Источник: Канал '{channel_name}'")
+            pdf.cell(0, 5, sanitized_channel_name, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L', fill=True)
+            pdf.ln(2)
             
             if message.content:
                 pdf.set_font('Galindo', '', 12)
@@ -264,7 +303,12 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                             image_bytes = await resp.read()
                             img = Image.open(io.BytesIO(image_bytes))
                             page_width = pdf.w - pdf.l_margin - pdf.r_margin
-                            pdf.image(img, w=page_width, h=page_width * (img.height / img.width))
+                            
+                            img_height = page_width * (img.height / img.width)
+                            if pdf.get_y() + img_height > pdf.page_break_trigger:
+                                pdf.add_page()
+
+                            pdf.image(img, w=page_width, h=img_height)
                             pdf.ln(5)
                             total_images_count += 1
                 except Exception as e: print(f"Не удалось вставить изображение с URL {url}: {e}")
@@ -273,11 +317,14 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
 
         for channel in sorted_channels:
             pdf.add_page(); pdf.set_font('Galindo', 'B', 16)
-            pdf.cell(0, 10, sanitizer.sanitize(f'Канал: {channel.name}'), new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C'); pdf.ln(10)
+            pdf.cell(0, 10, sanitizer.sanitize(f'Сборник Лора: {channel.name}'), new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C'); pdf.ln(10)
             
             if isinstance(channel, discord.ForumChannel):
                 all_threads = channel.threads + [t async for t in channel.archived_threads(limit=None)]
                 for thread in sorted(all_threads, key=lambda t: t.created_at):
+                    pdf.set_font('Galindo', 'B', 14)
+                    pdf.cell(0, 10, sanitizer.sanitize(f"Тема: {thread.name}"), new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L')
+                    pdf.ln(5)
                     async for message in thread.history(limit=500, oldest_first=True): await process_message(message)
             else:
                 async for message in channel.history(limit=2000, oldest_first=True): await process_message(message)
@@ -286,7 +333,7 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         pdf.output(LORE_PDF_PATH)
         pdf_size_mb = os.path.getsize(LORE_PDF_PATH) / (1024 * 1024)
         
-        embed = discord.Embed(title="✅ Лор успешно собран в PDF!", color=discord.Color.green())
+        embed = discord.Embed(title="✅ Лор успешно собран в PDF!", description="Контекст и источники из каналов были добавлены для улучшения работы ИИ.", color=discord.Color.green())
         embed.add_field(name="Собрано сообщений", value=str(total_messages_count))
         embed.add_field(name="Вставлено изображений", value=str(total_images_count))
         embed.add_field(name="Итоговый размер", value=f"{pdf_size_mb:.2f} МБ")
@@ -299,6 +346,7 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
 
 @bot.tree.command(name="ask_lore", description="Задать вопрос по миру, правилам и лору 'Вальдеса'")
 @app_commands.describe(question="Ваш вопрос Хранителю знаний.")
+@app_commands.checks.cooldown(1, 60.0, key=lambda i: i.user.id)
 async def ask_lore(interaction: discord.Interaction, question: str):
     await interaction.response.defer(ephemeral=False, thinking=True)
     
@@ -339,6 +387,7 @@ async def ask_lore(interaction: discord.Interaction, question: str):
     discord.app_commands.Choice(name="Стандартная оптимизация", value="standard"),
     discord.app_commands.Choice(name="Максимальная креативность", value="creative"),
 ])
+@app_commands.checks.cooldown(1, 120.0, key=lambda i: i.user.id)
 async def optimize_post(interaction: discord.Interaction, post_text: str, optimization_level: discord.app_commands.Choice[str], image: discord.Attachment = None):
     await interaction.response.defer(ephemeral=True, thinking=True)
     if image and (not image.content_type or not image.content_type.startswith("image/")):
@@ -376,8 +425,8 @@ async def optimize_post(interaction: discord.Interaction, post_text: str, optimi
 @bot.tree.command(name="help", description="Показывает информацию обо всех доступных командах.")
 async def help(interaction: discord.Interaction):
     embed = discord.Embed(title="📜 Справка по командам", description="Вот список всех доступных команд и их описание:", color=discord.Color.blue())
-    embed.add_field(name="/optimize_post", value="Улучшает ваш РП-пост.", inline=False)
-    embed.add_field(name="/ask_lore", value="Задает вопрос Хранителю знаний по миру 'Вальдеса'.", inline=False)
+    embed.add_field(name="/optimize_post", value="Улучшает ваш РП-пост (перезарядка 2 мин.).", inline=False)
+    embed.add_field(name="/ask_lore", value="Задает вопрос Хранителю знаний (перезарядка 1 мин.).", inline=False)
     embed.add_field(name="/about", value="Показывает информацию о боте и его создателе.", inline=False)
     embed.add_field(name="/help", value="Показывает это справочное сообщение.", inline=False)
     embed.add_field(name="/update_lore", value="**[АДМИН]** Собирает весь лор в PDF-файл для команды /ask_lore.", inline=False)
