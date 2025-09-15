@@ -17,6 +17,10 @@ import string
 from datetime import datetime, time, timezone
 import sys
 import asyncio
+import pytesseract # <-- НОВЫЙ ИМПОРТ
+
+# Если Tesseract не добавлен в PATH на Windows, раскомментируйте и укажите путь:
+# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 # Загрузка переменных окружения из файла .env
 load_dotenv()
@@ -280,6 +284,7 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     full_lore_text = ""
     parsed_channels_count = 0
     total_messages_count = 0
+    total_images_count = 0 # <-- СЧЕТЧИК ИЗОБРАЖЕНИЙ
     
     channels_to_parse = []
     for channel_id in channel_ids:
@@ -294,9 +299,10 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     for channel in sorted_channels:
         full_lore_text += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
         
-        def parse_message(message):
-            nonlocal full_lore_text, total_messages_count
+        async def parse_message(message):
+            nonlocal full_lore_text, total_messages_count, total_images_count
             content_found = False
+            # Парсинг текста и эмбедов (как и раньше)
             if message.content:
                 full_lore_text += message.content + "\n\n"
                 content_found = True
@@ -307,6 +313,31 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                     for field in embed.fields: full_lore_text += f"**{field.name}**\n{field.value}\n"
                     full_lore_text += "\n"
                 content_found = True
+            
+            # --- НАЧАЛО НОВОГО БЛОКА: ОБРАБОТКА ИЗОБРАЖЕНИЙ ---
+            if message.attachments:
+                for attachment in message.attachments:
+                    # Проверяем, что файл - изображение
+                    if attachment.content_type and attachment.content_type.startswith('image/'):
+                        try:
+                            # Читаем изображение в байты
+                            image_bytes = await attachment.read()
+                            # Открываем изображение с помощью Pillow
+                            image = Image.open(io.BytesIO(image_bytes))
+                            
+                            # Распознаем текст с помощью Tesseract (для русского и английского)
+                            extracted_text = pytesseract.image_to_string(image, lang='rus+eng')
+                            
+                            if extracted_text.strip():
+                                full_lore_text += f"--- Начало текста из изображения: {attachment.filename} ---\n"
+                                full_lore_text += extracted_text.strip() + "\n"
+                                full_lore_text += f"--- Конец текста из изображения: {attachment.filename} ---\n\n"
+                                content_found = True
+                                total_images_count += 1
+                        except Exception as e:
+                            print(f"Не удалось обработать изображение {attachment.filename}: {e}")
+            # --- КОНЕЦ НОВОГО БЛОКА ---
+
             if content_found:
                 total_messages_count += 1
 
@@ -325,11 +356,11 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
             for thread in sorted_threads:
                 full_lore_text += f"--- Начало публикации: {thread.name} ---\n\n"
                 async for message in thread.history(limit=500, oldest_first=True):
-                    parse_message(message)
+                    await parse_message(message) # Используем await, так как parse_message теперь асинхронна
                 full_lore_text += f"--- Конец публикации: {thread.name} ---\n\n"
         else:
             async for message in channel.history(limit=500, oldest_first=True):
-                parse_message(message)
+                await parse_message(message) # Используем await
 
         full_lore_text += f"--- КОНЕЦ КАНАЛА: {channel.name} ---\n"
         parsed_channels_count += 1
@@ -343,8 +374,9 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         
         embed = discord.Embed(title="✅ Лор успешно обновлен!", description="Файл `file.txt` был перезаписан и прикреплен к этому сообщению для проверки.", color=discord.Color.green())
         embed.add_field(name="Обработано каналов", value=str(parsed_channels_count), inline=True)
-        embed.add_field(name="Собрано публикаций/сообщений", value=str(total_messages_count), inline=True)
-        embed.add_field(name="Размер файла", value=f"{file_size:.2f} КБ", inline=True)
+        embed.add_field(name="Собрано сообщений", value=str(total_messages_count), inline=True)
+        embed.add_field(name="Распознано изображений", value=str(total_images_count), inline=True) # <-- НОВОЕ ПОЛЕ
+        embed.add_field(name="Размер файла", value=f"{file_size:.2f} КБ", inline=False)
         
         await interaction.followup.send(
             embed=embed,
@@ -360,6 +392,7 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         
     except Exception as e:
         await interaction.followup.send(f"Произошла критическая ошибка при записи или отправке файла: {e}", ephemeral=True)
+
 
 @bot.tree.command(name="optimize_post", description="Улучшает РП-пост, принимая текст и уровень улучшения.")
 @app_commands.describe(
