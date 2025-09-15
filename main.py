@@ -19,8 +19,9 @@ import sys
 import asyncio
 import pytesseract
 from fpdf import FPDF
-from fpdf.enums import XPos, YPos # <-- НОВЫЙ ИМПОРТ ДЛЯ ИСПРАВЛЕНИЯ ПРЕДУПРЕЖДЕНИЯ
-import re # <-- НОВЫЙ ИМПОРТ ДЛЯ УЛУЧШЕНИЯ ОБРАБОТКИ MARKDOWN
+from fpdf.enums import XPos, YPos
+import re
+import aiohttp # <-- НОВЫЙ ИМПОРТ
 
 # Загрузка переменных окружения из файла .env
 load_dotenv()
@@ -251,23 +252,13 @@ async def on_ready():
 
 # --- 7. КОМАНДЫ БОТА ---
 
-# --- ИЗМЕНЕНИЕ: Улучшенная функция преобразования Markdown ---
 def robust_markdown_to_html(text: str) -> str:
     """Более надежно преобразует Markdown в HTML для FPDF, обрабатывая вложенность."""
-    # 1. Экранирование базовых HTML-символов
     text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    
-    # 2. Обработка комбинаций в правильном порядке (от сложного к простому)
-    # ***Текст*** -> <b><i>Текст</i></b>
     text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>', text)
-    # **Текст** -> <b>Текст</b>
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-    # *Текст* -> <i>Текст</i>
     text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
-    # __Текст__ -> <u>Текст</u>
     text = re.sub(r'__(.+?)__', r'<u>\1</u>', text)
-    
-    # 3. Замена переносов строк
     return text.replace('\n', '<br/>')
 
 @bot.tree.command(name="update_lore", description="[АДМИН] Собирает лор из каналов в единый PDF-файл.")
@@ -302,13 +293,20 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
 
     pdf = FPDF()
     try:
-        # --- ИЗМЕНЕНИЕ: Регистрируем все необходимые стили и комбинации ---
         pdf.add_font('Galindo', '', 'GalindoCyrillic-Regular.ttf')
-        pdf.add_font('Galindo', 'B', 'GalindoCyrillic-Regular.ttf') # Для жирного
-        pdf.add_font('Galindo', 'I', 'GalindoCyrillic-Regular.ttf') # Для курсива
-        pdf.add_font('Galindo', 'BI', 'GalindoCyrillic-Regular.ttf') # Для жирного курсива
-    except RuntimeError:
-        await interaction.followup.send("❌ **Критическая ошибка:** Файл шрифта `GalindoCyrillic-Regular.ttf` не найден рядом с `main.py`. Загрузите его на сервер.", ephemeral=True)
+        pdf.add_font('Galindo', 'B', 'GalindoCyrillic-Regular.ttf')
+        pdf.add_font('Galindo', 'I', 'GalindoCyrillic-Regular.ttf')
+        pdf.add_font('Galindo', 'BI', 'GalindoCyrillic-Regular.ttf')
+        pdf.add_font('DejaVu', '', 'DejaVuSans.ttf')
+        pdf.add_fallback_font('DejaVu')
+    except RuntimeError as e:
+        error_message = str(e)
+        if 'Galindo' in error_message:
+            await interaction.followup.send("❌ **Критическая ошибка:** Файл шрифта `GalindoCyrillic-Regular.ttf` не найден.", ephemeral=True)
+        elif 'DejaVu' in error_message:
+            await interaction.followup.send("❌ **Критическая ошибка:** Запасной шрифт `DejaVuSans.ttf` не найден.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ **Критическая ошибка со шрифтом:** {e}", ephemeral=True)
         return
     
     pdf.set_font('Galindo', '', 12)
@@ -328,96 +326,118 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
 
     sorted_channels = sorted(channels_to_parse, key=lambda c: c.position)
 
-    for channel in sorted_channels:
-        pdf.add_page()
-        pdf.set_font('Galindo', 'B', 16)
-        # --- ИЗМЕНЕНИЕ: Исправляем DeprecationWarning ---
-        pdf.cell(0, 10, f'Канал: {channel.name}', new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
-        pdf.ln(10)
-        
-        full_lore_text_for_memory += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
-        
-        async def process_message(message):
-            nonlocal full_lore_text_for_memory, total_messages_count, total_images_count
-            content_found = False
-            
-            if message.content:
-                full_lore_text_for_memory += message.content + "\n\n"
-                pdf.set_font('Galindo', '', 12)
-                # --- ИЗМЕНЕНИЕ: Используем новую надежную функцию ---
-                pdf.write_html(robust_markdown_to_html(message.content))
+    # --- НАЧАЛО НОВОГО БЛОКА: АСИНХРОННАЯ СЕССИЯ ДЛЯ СКАЧИВАНИЯ ---
+    async with aiohttp.ClientSession() as session:
+        # --- НОВАЯ ВЛОЖЕННАЯ ФУНКЦИЯ ДЛЯ ОБРАБОТКИ ЛЮБОГО ИЗОБРАЖЕНИЯ ---
+        async def process_image_from_bytes(image_bytes: bytes, filename: str):
+            nonlocal full_lore_text_for_memory, total_images_count
+            try:
+                img = Image.open(io.BytesIO(image_bytes))
+
+                # Распознаем текст для /ask_lore
+                ocr_text = pytesseract.image_to_string(img, lang='rus+eng')
+                if ocr_text.strip():
+                    full_lore_text_for_memory += f"--- Начало текста из изображения: {filename} ---\n{ocr_text.strip()}\n--- Конец текста ---\n\n"
+
+                # Вставляем изображение в PDF
+                page_width = pdf.w - pdf.l_margin - pdf.r_margin
+                ratio = img.height / img.width
+                img_width = page_width
+                img_height = page_width * ratio
+                
+                pdf.image(io.BytesIO(image_bytes), w=img_width, h=img_height)
                 pdf.ln(5)
-                content_found = True
+
+                total_images_count += 1
+            except Exception as e:
+                print(f"Не удалось обработать изображение {filename}: {e}")
+
+        # --- ОСНОВНОЙ ЦИКЛ ОБРАБОТКИ ---
+        for channel in sorted_channels:
+            pdf.add_page()
+            pdf.set_font('Galindo', 'B', 16)
+            pdf.cell(0, 10, f'Канал: {channel.name}', new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
+            pdf.ln(10)
             
-            if message.embeds:
-                for embed in message.embeds:
-                    if embed.title:
-                        full_lore_text_for_memory += f"**{embed.title}**\n"
-                        pdf.set_font('Galindo', 'B', 14)
-                        pdf.write_html(f"<b>{robust_markdown_to_html(embed.title)}</b>")
-                        pdf.ln(2)
-                    if embed.description:
-                        full_lore_text_for_memory += embed.description + "\n"
-                        pdf.set_font('Galindo', '', 12)
-                        pdf.write_html(robust_markdown_to_html(embed.description))
-                        pdf.ln(4)
-                    for field in embed.fields:
-                        full_lore_text_for_memory += f"**{field.name}**\n{field.value}\n"
-                        pdf.set_font('Galindo', 'B', 12)
-                        pdf.write_html(f"<b>{robust_markdown_to_html(field.name)}</b>")
-                        pdf.ln(1)
-                        pdf.set_font('Galindo', '', 12)
-                        pdf.write_html(robust_markdown_to_html(field.value))
-                        pdf.ln(4)
-                    full_lore_text_for_memory += "\n"
-                content_found = True
+            full_lore_text_for_memory += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
             
-            if message.attachments:
-                for attachment in message.attachments:
-                    if attachment.content_type and attachment.content_type.startswith('image/'):
-                        try:
+            async def process_message(message):
+                nonlocal total_messages_count
+                content_found = False
+                
+                if message.content:
+                    full_lore_text_for_memory += message.content + "\n\n"
+                    pdf.set_font('Galindo', '', 12)
+                    pdf.write_html(robust_markdown_to_html(message.content))
+                    pdf.ln(5)
+                    content_found = True
+                
+                # --- ИЗМЕНЕНИЕ: ОБРАБОТКА ЭМБЕДОВ, ВКЛЮЧАЯ ИЗОБРАЖЕНИЯ ---
+                if message.embeds:
+                    for embed in message.embeds:
+                        if embed.title:
+                            full_lore_text_for_memory += f"**{embed.title}**\n"
+                            pdf.set_font('Galindo', 'B', 14)
+                            pdf.write_html(f"<b>{robust_markdown_to_html(embed.title)}</b>")
+                            pdf.ln(2)
+                        if embed.description:
+                            full_lore_text_for_memory += embed.description + "\n"
+                            pdf.set_font('Galindo', '', 12)
+                            pdf.write_html(robust_markdown_to_html(embed.description))
+                            pdf.ln(4)
+                        for field in embed.fields:
+                            full_lore_text_for_memory += f"**{field.name}**\n{field.value}\n"
+                            pdf.set_font('Galindo', 'B', 12)
+                            pdf.write_html(f"<b>{robust_markdown_to_html(field.name)}</b>")
+                            pdf.ln(1)
+                            pdf.set_font('Galindo', '', 12)
+                            pdf.write_html(robust_markdown_to_html(field.value))
+                            pdf.ln(4)
+                        
+                        # --- НОВЫЙ БЛОК: ИЩЕМ ИЗОБРАЖЕНИЯ В ЭМБЕДЕ ---
+                        if embed.image.url:
+                            async with session.get(embed.image.url) as resp:
+                                if resp.status == 200:
+                                    image_bytes = await resp.read()
+                                    await process_image_from_bytes(image_bytes, f"embed_image_{embed.image.url.split('/')[-1]}")
+                        
+                        if embed.thumbnail.url:
+                            async with session.get(embed.thumbnail.url) as resp:
+                                if resp.status == 200:
+                                    image_bytes = await resp.read()
+                                    await process_image_from_bytes(image_bytes, f"embed_thumbnail_{embed.thumbnail.url.split('/')[-1]}")
+                        
+                        full_lore_text_for_memory += "\n"
+                    content_found = True
+                
+                # --- ИЗМЕНЕНИЕ: ОБРАБОТКА ВЛОЖЕНИЙ ---
+                if message.attachments:
+                    for attachment in message.attachments:
+                        if attachment.content_type and attachment.content_type.startswith('image/'):
                             image_bytes = await attachment.read()
-                            img = Image.open(io.BytesIO(image_bytes))
-                            
-                            ocr_text = pytesseract.image_to_string(img, lang='rus+eng')
-                            if ocr_text.strip():
-                                full_lore_text_for_memory += f"--- Начало текста из изображения: {attachment.filename} ---\n{ocr_text.strip()}\n--- Конец текста ---\n\n"
+                            await process_image_from_bytes(image_bytes, attachment.filename)
+                
+                if content_found or message.attachments:
+                    total_messages_count += 1
+                    pdf.ln(5)
 
-                            page_width = pdf.w - pdf.l_margin - pdf.r_margin
-                            ratio = img.height / img.width
-                            img_width = page_width
-                            img_height = page_width * ratio
-                            
-                            pdf.image(io.BytesIO(image_bytes), w=img_width, h=img_height)
-                            pdf.ln(5)
-
-                            total_images_count += 1
-                            content_found = True
-                        except Exception as e:
-                            print(f"Не удалось обработать изображение {attachment.filename}: {e}")
-            
-            if content_found:
-                total_messages_count += 1
-                pdf.ln(5)
-
-        if isinstance(channel, discord.ForumChannel):
-            all_threads = channel.threads + [t async for t in channel.archived_threads(limit=None)]
-            sorted_threads = sorted(all_threads, key=lambda t: t.created_at)
-            for thread in sorted_threads:
-                pdf.set_font('Galindo', 'I', 14)
-                # --- ИЗМЕНЕНИЕ: Исправляем DeprecationWarning ---
-                pdf.cell(0, 10, f"--- Публикация: {thread.name} ---", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L')
-                pdf.ln(5)
-                full_lore_text_for_memory += f"--- Начало публикации: {thread.name} ---\n\n"
-                async for message in thread.history(limit=500, oldest_first=True):
+            if isinstance(channel, discord.ForumChannel):
+                all_threads = channel.threads + [t async for t in channel.archived_threads(limit=None)]
+                sorted_threads = sorted(all_threads, key=lambda t: t.created_at)
+                for thread in sorted_threads:
+                    pdf.set_font('Galindo', 'I', 14)
+                    pdf.cell(0, 10, f"--- Публикация: {thread.name} ---", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L')
+                    pdf.ln(5)
+                    full_lore_text_for_memory += f"--- Начало публикации: {thread.name} ---\n\n"
+                    async for message in thread.history(limit=500, oldest_first=True):
+                        await process_message(message)
+                    full_lore_text_for_memory += f"--- Конец публикации: {thread.name} ---\n\n"
+            else:
+                async for message in channel.history(limit=500, oldest_first=True):
                     await process_message(message)
-                full_lore_text_for_memory += f"--- Конец публикации: {thread.name} ---\n\n"
-        else:
-            async for message in channel.history(limit=500, oldest_first=True):
-                await process_message(message)
 
-        full_lore_text_for_memory += f"--- КОНЕЦ КАНАЛА: {channel.name} ---\n"
-        parsed_channels_count += 1
+            full_lore_text_for_memory += f"--- КОНЕЦ КАНАЛА: {channel.name} ---\n"
+            parsed_channels_count += 1
 
     try:
         pdf_output_filename = "lore.pdf"
