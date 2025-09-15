@@ -66,6 +66,19 @@ class CharacterSanitizer:
             for table in font['cmap'].tables:
                 self.supported_chars.update(table.cmap.keys())
             print(f"Загружен шрифт {font_path}, найдено {len(self.supported_chars)} поддерживаемых символов.")
+
+            # --- ИЗМЕНЕНИЕ ЗДЕСЬ: Белый список символов ---
+            # Добавляем символы, которые должны быть разрешены ВСЕГДА,
+            # даже если их нет в основном шрифте. Это решит проблему с '????'.
+            whitelist = {
+                '═', '─', '║', '│', '✅', '❌', '🔑', '⚙️', '▶️', '📝', '📜',
+                '✨', '🚫', '⚠️', '🌟', '📔', '🧬'
+            }
+            # Объединяем символы из шрифта с нашим белым списком
+            self.supported_chars.update(ord(char) for char in whitelist)
+            print(f"После добавления белого списка, всего {len(self.supported_chars)} поддерживаемых символов.")
+            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
         except Exception as e:
             print(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось загрузить cmap для шрифта {font_path}: {e}")
             self.supported_chars = set()
@@ -123,7 +136,7 @@ def get_optimizer_prompt(level):
 Обработай пост согласно уровню '{level}', соблюдая ВСЕ вышеописанные правила.
 
 *   **Уровень 'Минимальные правки':**
-    *   Твоя единственная задача — разобрать текст игрока на действия, мысли/звуки и речь и **ПЕРЕФОРМАТИРОВАТЬ** его согласно правилам.
+    *   Твоя единственная задача — разоbrar текст игрока на действия, мысли/звуки и речь и **ПЕРЕФОРМАТИРОВАТЬ** его согласно правилам.
     *   Переведи действия в третье лицо.
     *   **ЗАПРЕЩЕНО** добавлять, убирать или изменять слова, кроме смены лица повествования (я -> он/она). Только форматирование.
 
@@ -291,7 +304,6 @@ def robust_markdown_to_html(text: str) -> str:
 @bot.tree.command(name="update_lore", description="[АДМИН] Собирает лор из каналов в единый PDF-файл.")
 @app_commands.describe(access_code="Ежедневный код доступа для подтверждения")
 async def update_lore(interaction: discord.Interaction, access_code: str):
-    # (Весь код проверки прав доступа остается без изменений)
     is_owner = str(interaction.user.id) == OWNER_USER_ID
     is_admin = interaction.user.guild_permissions.administrator
 
@@ -355,40 +367,30 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     sorted_channels = sorted(channels_to_parse, key=lambda c: c.position)
 
     async with aiohttp.ClientSession() as session:
-        # ИЗМЕНЕНИЕ ЗДЕСЬ: Функция для обработки и сжатия изображений
         async def process_image_from_bytes(image_bytes: bytes, filename: str):
             nonlocal full_lore_text_for_memory, total_images_count
             try:
                 print(f"Обработка изображения: {filename}...")
                 img = Image.open(io.BytesIO(image_bytes))
 
-                # --- 1. OCR (распознавание текста) ---
-                # Распознаем текст до любого сжатия, чтобы сохранить качество
                 ocr_text = pytesseract.image_to_string(img, lang='rus+eng')
                 if ocr_text.strip():
                     full_lore_text_for_memory += f"--- Начало текста из изображения: {filename} ---\n{ocr_text.strip()}\n--- Конец текста ---\n\n"
 
-                # --- 2. СЖАТИЕ ИЗОБРАЖЕНИЯ ДЛЯ PDF ---
-                # Конвертируем в RGB, чтобы избавиться от прозрачности (необходимо для JPEG)
                 if img.mode in ('RGBA', 'P', 'LA'):
                     img = img.convert('RGB')
                 
-                # Создаем буфер в памяти для сжатого изображения
                 compressed_buffer = io.BytesIO()
-                # Сохраняем в буфер как JPEG с качеством 75%
                 img.save(compressed_buffer, format='JPEG', quality=75, optimize=True)
                 compressed_buffer.seek(0)
                 print(f"Изображение {filename} успешно сжато.")
 
-                # --- 3. ВСТАВКА В PDF ---
-                # Рассчитываем размеры, чтобы вписать в страницу
                 page_width = pdf.w - pdf.l_margin - pdf.r_margin
                 ratio = img.height / img.width
                 img_width = page_width
                 img_height = page_width * ratio
 
-                # Вставляем сжатое изображение из буфера
-                pdf.image(compressed_buffer, w=img_width, h=img_height, type='JPEG')
+                pdf.image(compressed_buffer, w=img_width, h=img_height)
                 pdf.ln(5)
                 total_images_count += 1
             except Exception as e:
@@ -414,7 +416,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                     pdf.ln(5)
                     content_found = True
                 
-                # (Код обработки эмбедов и остальной логики остается без изменений)
                 if message.embeds:
                     for embed in message.embeds:
                         if embed.title:
@@ -506,7 +507,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         embed.add_field(name="Вставлено изображений", value=str(total_images_count), inline=True)
         embed.add_field(name="Итоговый размер PDF", value=f"{pdf_size_mb:.2f} МБ", inline=True)
         
-        # Проверка размера файла остаётся как страховка
         if pdf_size_mb > 24:
             await interaction.followup.send(
                 content="⚠️ **Внимание:** Размер PDF-файла всё ещё превышает 25 МБ даже после сжатия. Я не могу отправить его в Discord. Файл сохранен на сервере.",
