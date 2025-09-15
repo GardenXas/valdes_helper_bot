@@ -17,6 +17,8 @@ import string
 from datetime import datetime, time, timezone
 import sys
 import asyncio
+import re ### НОВОЕ ### - для поиска тегов изображений
+import shutil ### НОВОЕ ### - для управления папкой с изображениями
 
 # Загрузка переменных окружения из файла .env
 load_dotenv()
@@ -35,10 +37,12 @@ if not all([DISCORD_TOKEN, GEMINI_API_KEY, MAIN_GUILD_ID, ADMIN_GUILD_ID, CODE_C
 
 # Настройка API Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel('gemini-2.5-flash')
+gemini_model = genai.GenerativeModel('gemini-1.5-flash')
 
-# --- 2. ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ И ФУНКЦИЯ ДЛЯ ЛОРА ---
+# --- 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И ФУНКЦИИ ДЛЯ ЛОРА ---
 VALDES_LORE = ""
+LORE_IMAGES_DIR = "lore_images" ### НОВОЕ ### - Папка для хранения изображений
+IMAGE_MAP_FILE = "image_map.json" ### НОВОЕ ### - Файл для сопоставления ID и имен файлов
 
 def load_lore_from_file():
     """Загружает/перезагружает лор из файла в память бота."""
@@ -108,7 +112,7 @@ def get_optimizer_prompt(level):
 Верни ТОЛЬКО готовый текст поста или сообщение об ошибке. Никаких предисловий.
 """
 
-def get_lore_prompt():
+def get_lore_prompt(): ### ИЗМЕНЕНО ### - Промпт теперь объясняет ИИ, как работать с тегами изображений.
     """Возвращает системный промпт для ответов на вопросы по лору."""
     return f"""
 Ты — Хранитель знаний мира 'Вальдес'. Твоя задача — отвечать на вопросы игроков, основываясь ИСКЛЮЧИТЕЛЬНО на предоставленном тебе тексте с лором и правилами.
@@ -117,10 +121,12 @@ def get_lore_prompt():
 1.  **ИСТОЧНИК — ЗАКОН:** Используй только текст, приведенный ниже. Не добавляй никакой информации извне.
 2.  **НЕ ДОДУМЫВАЙ:** Если в тексте нет прямого ответа на вопрос, честно скажи: "В предоставленных архивах нет точной информации по этому вопросу." В этом случае не добавляй источники.
 3.  **СТИЛЬ:** Отвечай уважительно, в стиле мудрого летописца.
-4.  **ЦИТИРОВАНИЕ ИСТОЧНИКОВ (ОБЯЗАТЕЛЬНО):** После твоего основного ответа, ты **ДОЛЖЕН** добавить специальный разделитель `%%SOURCES%%`. После этого разделителя перечисли через запятую названия каналов, из которых была взята информация. Названия каналов находятся в строках формата `--- НАЧАЛО КАНАЛА: [Имя канала] ---`.
+4.  **РАБОТА С ИЗОБРАЖЕНИЯМИ (НОВИНКА!):** В тексте лора могут встречаться специальные теги вида `[IMAGE_XXX]`, где XXX - это номер. Эти теги обозначают изображения, связанные с текстом. Если ты считаешь, что изображение напрямую относится к твоему ответу и иллюстрирует его, **обязательно добавь этот тег** в самый конец своего ответа, на новой строке.
+    *   Пример ответа с изображением: `Дварфы - это низкорослый народ, живущий в горах.%%SOURCES%%║...│канал\n[IMAGE_123]`
+    *   Вставляй только ОДИН, самый релевантный тег. Не пиши ничего после тега.
+5.  **ЦИТИРОВАНИЕ ИСТОЧНИКОВ (ОБЯЗАТЕЛЬНО):** После твоего основного ответа, ты **ДОЛЖЕН** добавить специальный разделитель `%%SOURCES%%`. После этого разделителя перечисли через запятую названия каналов, из которых была взята информация. Названия каналов находятся в строках формата `--- НАЧАЛО КАНАЛА: [Имя канала] ---`.
     *   Пример формата: `Ответ на вопрос.%%SOURCES%%║🌟│астромантия, ║🧬│виды-разумных-сущностей`
     *   Если информация взята из одного канала, укажи только его.
-    *   Не добавляй ничего после названий каналов.
 
 Вот текст, который является твоей единственной базой знаний:
 --- НАЧАЛО ДОКУМЕНТА С ЛОРОМ ---
@@ -249,7 +255,7 @@ async def on_ready():
 
 @bot.tree.command(name="update_lore", description="[АДМИН] Собирает лор из заданных каналов и обновляет файл.")
 @app_commands.describe(access_code="Ежедневный код доступа для подтверждения")
-async def update_lore(interaction: discord.Interaction, access_code: str):
+async def update_lore(interaction: discord.Interaction, access_code: str): ### ИЗМЕНЕНО ### - Команда полностью переработана для поддержки изображений
     is_owner = str(interaction.user.id) == OWNER_USER_ID
     is_admin = interaction.user.guild_permissions.administrator
 
@@ -267,6 +273,12 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         
     await interaction.response.defer(ephemeral=True, thinking=True)
     
+    # --- ### НОВОЕ ### - Подготовка папки для изображений ---
+    if os.path.exists(LORE_IMAGES_DIR):
+        shutil.rmtree(LORE_IMAGES_DIR) # Удаляем старую папку, чтобы избавиться от удаленных в дискорде картинок
+    os.makedirs(LORE_IMAGES_DIR) # Создаем чистую папку
+    # --- Конец нового блока ---
+
     try:
         channel_ids = [int(id.strip()) for id in LORE_CHANNEL_IDS.split(',')]
     except ValueError:
@@ -281,6 +293,11 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     parsed_channels_count = 0
     total_messages_count = 0
     
+    ### НОВОЕ ### - Переменные для управления изображениями
+    image_id_counter = 1
+    image_map = {}
+    downloaded_images_count = 0
+    
     channels_to_parse = []
     for channel_id in channel_ids:
         channel = bot.get_channel(channel_id)
@@ -294,20 +311,41 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     for channel in sorted_channels:
         full_lore_text += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
         
-        def parse_message(message):
-            nonlocal full_lore_text, total_messages_count
+        async def parse_message(message):
+            nonlocal full_lore_text, total_messages_count, image_id_counter, image_map, downloaded_images_count
             content_found = False
             if message.content:
-                full_lore_text += message.content + "\n\n"
+                full_lore_text += message.content + "\n" # Убрал лишний \n, чтобы тег картинки был ближе к тексту
                 content_found = True
             if message.embeds:
                 for embed in message.embeds:
                     if embed.title: full_lore_text += f"**{embed.title}**\n"
                     if embed.description: full_lore_text += embed.description + "\n"
                     for field in embed.fields: full_lore_text += f"**{field.name}**\n{field.value}\n"
-                    full_lore_text += "\n"
                 content_found = True
+            
+            # --- ### НОВОЕ ### - Обработка и скачивание изображений ---
+            if message.attachments:
+                for attachment in message.attachments:
+                    if attachment.content_type and attachment.content_type.startswith('image/'):
+                        image_id = f"IMAGE_{image_id_counter}"
+                        file_extension = attachment.filename.split('.')[-1]
+                        new_filename = f"{image_id}.{file_extension}"
+                        save_path = os.path.join(LORE_IMAGES_DIR, new_filename)
+                        
+                        try:
+                            await attachment.save(save_path)
+                            full_lore_text += f"\n[{image_id}]\n" # Вставляем тег в текст
+                            image_map[image_id] = new_filename # Сохраняем соответствие
+                            image_id_counter += 1
+                            downloaded_images_count += 1
+                            content_found = True
+                        except Exception as e:
+                            print(f"Не удалось сохранить изображение {attachment.filename}: {e}")
+            # --- Конец нового блока ---
+
             if content_found:
+                full_lore_text += "\n" # Добавляем отступ после всего контента сообщения
                 total_messages_count += 1
 
         if isinstance(channel, discord.ForumChannel):
@@ -325,25 +363,31 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
             for thread in sorted_threads:
                 full_lore_text += f"--- Начало публикации: {thread.name} ---\n\n"
                 async for message in thread.history(limit=500, oldest_first=True):
-                    parse_message(message)
+                    await parse_message(message)
                 full_lore_text += f"--- Конец публикации: {thread.name} ---\n\n"
         else:
             async for message in channel.history(limit=500, oldest_first=True):
-                parse_message(message)
+                await parse_message(message)
 
         full_lore_text += f"--- КОНЕЦ КАНАЛА: {channel.name} ---\n"
         parsed_channels_count += 1
 
     try:
+        # Сохраняем текстовый лор
         with open("file.txt", "w", encoding="utf-8") as f:
             f.write(full_lore_text)
+            
+        # ### НОВОЕ ### - Сохраняем карту изображений
+        with open(IMAGE_MAP_FILE, "w", encoding="utf-8") as f:
+            json.dump(image_map, f, indent=4)
         
         load_lore_from_file()
         file_size = os.path.getsize("file.txt") / 1024
         
-        embed = discord.Embed(title="✅ Лор успешно обновлен!", description="Файл `file.txt` был перезаписан и прикреплен к этому сообщению для проверки.", color=discord.Color.green())
+        embed = discord.Embed(title="✅ Лор успешно обновлен!", description="Файл `file.txt` и карта изображений `image_map.json` были созданы/перезаписаны. Текстовый файл прикреплен для проверки.", color=discord.Color.green())
         embed.add_field(name="Обработано каналов", value=str(parsed_channels_count), inline=True)
-        embed.add_field(name="Собрано публикаций/сообщений", value=str(total_messages_count), inline=True)
+        embed.add_field(name="Собрано публикаций", value=str(total_messages_count), inline=True)
+        embed.add_field(name="Скачано изображений", value=str(downloaded_images_count), inline=True) ### НОВОЕ ###
         embed.add_field(name="Размер файла", value=f"{file_size:.2f} КБ", inline=True)
         
         await interaction.followup.send(
@@ -414,12 +458,39 @@ async def optimize_post(interaction: discord.Interaction, post_text: str, optimi
 
 @bot.tree.command(name="ask_lore", description="Задать вопрос по миру, правилам и лору 'Вальдеса'")
 @app_commands.describe(question="Ваш вопрос Хранителю знаний.")
-async def ask_lore(interaction: discord.Interaction, question: str):
+async def ask_lore(interaction: discord.Interaction, question: str): ### ИЗМЕНЕНО ### - Команда теперь ищет тег изображения в ответе и прикрепляет картинку.
     await interaction.response.defer(ephemeral=False)
     try:
         prompt = get_lore_prompt()
         response = await gemini_model.generate_content_async([prompt, f"\n\nВопрос игрока: {question}"])
         raw_text = response.text.strip()
+        
+        image_file_to_send = None
+        
+        # --- ### НОВОЕ ### - Поиск и обработка тега изображения ---
+        image_tag_match = re.search(r'\[(IMAGE_\d+)\]', raw_text)
+        if image_tag_match:
+            image_id = image_tag_match.group(1)
+            raw_text = raw_text.replace(image_tag_match.group(0), "").strip() # Удаляем тег из текста
+            
+            try:
+                with open(IMAGE_MAP_FILE, 'r', encoding='utf-8') as f:
+                    image_map = json.load(f)
+                
+                filename = image_map.get(image_id)
+                if filename:
+                    image_path = os.path.join(LORE_IMAGES_DIR, filename)
+                    if os.path.exists(image_path):
+                        # Готовим файл к отправке
+                        image_file_to_send = discord.File(image_path, filename="image.png")
+                    else:
+                        print(f"ПРЕДУПРЕЖДЕНИЕ: Файл изображения не найден для {image_id} по пути {image_path}")
+                else:
+                    print(f"ПРЕДУПРЕЖДЕНИЕ: ID изображения {image_id} не найден в {IMAGE_MAP_FILE}")
+
+            except (FileNotFoundError, json.JSONDecodeError) as e:
+                print(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось загрузить или прочитать файл {IMAGE_MAP_FILE}: {e}")
+        # --- Конец нового блока ---
 
         answer_text = raw_text
         sources_text = ""
@@ -433,9 +504,18 @@ async def ask_lore(interaction: discord.Interaction, question: str):
         
         if sources_text:
             embed.add_field(name="Источники:", value=sources_text, inline=False)
+        
+        # ### НОВОЕ ### - Если файл был подготовлен, устанавливаем его в эмбед
+        if image_file_to_send:
+            embed.set_image(url=f"attachment://image.png")
             
         embed.set_footer(text=f"Ответил Хранитель знаний | Запросил: {interaction.user.display_name}")
-        await interaction.followup.send(embed=embed)
+        
+        # ### НОВОЕ ### - Отправляем сообщение с файлом, если он есть
+        if image_file_to_send:
+            await interaction.followup.send(embed=embed, file=image_file_to_send)
+        else:
+            await interaction.followup.send(embed=embed)
 
     except Exception as e:
         print(f"Произошла ошибка при обработке запроса /ask_lore: {e}")
@@ -477,5 +557,4 @@ async def about(interaction: discord.Interaction):
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
-
 
