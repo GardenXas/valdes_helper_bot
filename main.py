@@ -38,13 +38,11 @@ LORE_PDF_PATH = "lore.pdf" # Константа для пути к PDF
 if not all([DISCORD_TOKEN, GEMINI_API_KEY, MAIN_GUILD_ID, ADMIN_GUILD_ID, CODE_CHANNEL_ID, OWNER_USER_ID, LORE_CHANNEL_IDS]):
     raise ValueError("КРИТИЧЕСКАЯ ОШИБКА: Один из ключей или ID не найден в .env")
 
-# <<< НОВЫЙ КОД: Преобразование ID каналов в int для дальнейшего использования
 try:
     CODE_CHANNEL_ID = int(CODE_CHANNEL_ID)
     OWNER_USER_ID = int(OWNER_USER_ID)
 except ValueError:
     raise ValueError("КРИТИЧЕСКАЯ ОШИБКА: CODE_CHANNEL_ID и OWNER_USER_ID должны быть числами.")
-# >>> КОНЕЦ НОВОГО КОДА
 
 genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
@@ -177,13 +175,12 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 async def on_ready():
     print(f'Бот {bot.user} запущен!');
     load_daily_code()
-    send_daily_code_task.start() # <<< НОВЫЙ КОД: Запускаем фоновую задачу
+    send_daily_code_task.start()
     try:
         synced = await bot.tree.sync(); print(f"Синхронизировано {len(synced)} команд.")
     except Exception as e: print(f"Ошибка синхронизации: {e}")
 
-# <<< НОВЫЙ КОД: Задача для автоматической генерации и отправки кода >>>
-SCHEDULED_TIME = time(hour=4, minute=0, tzinfo=timezone.utc) # Устанавливаем время отправки (например, 4:00 UTC)
+SCHEDULED_TIME = time(hour=4, minute=0, tzinfo=timezone.utc)
 
 @tasks.loop(time=SCHEDULED_TIME)
 async def send_daily_code_task():
@@ -213,7 +210,6 @@ async def send_daily_code_task():
 async def before_send_daily_code_task():
     await bot.wait_until_ready()
     print("Цикл отправки ежедневного кода готов к запуску.")
-# >>> КОНЕЦ НОВОГО КОДА
 
 @bot.tree.command(name="update_lore", description="[АДМИН] Собирает весь лор в единый PDF-файл.")
 @app_commands.describe(access_code="Ежедневный код доступа")
@@ -232,7 +228,12 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     try:
         font_path = 'GalindoCyrillic-Regular.ttf'
         sanitizer = CharacterSanitizer(font_path)
-        pdf.add_font('Galindo', '', font_path); pdf.add_font('Galindo', 'B', font_path)
+        pdf.add_font('Galindo', '', font_path)
+        pdf.add_font('Galindo', 'B', font_path)
+        # <<< ИСПРАВЛЕНИЕ: Регистрируем курсивные стили, используя обычный шрифт
+        pdf.add_font('Galindo', 'I', font_path)
+        pdf.add_font('Galindo', 'BI', font_path)
+        # >>> КОНЕЦ ИСПРАВЛЕНИЯ
     except Exception as e: return await interaction.followup.send(f"❌ **Критическая ошибка со шрифтом:**\n{e}", ephemeral=True)
     
     total_messages_count, total_images_count = 0, 0
@@ -324,12 +325,11 @@ async def ask_lore(interaction: discord.Interaction, question: str):
     finally:
         if lore_file:
             await asyncio.sleep(1) 
-            try: # <<< НОВЫЙ КОД: Добавлена обработка ошибок при удалении
+            try:
                 genai.delete_file(lore_file.name)
                 print(f"Загруженный файл {lore_file.name} удален с сервера.")
             except Exception as e:
                 print(f"Не удалось удалить файл {lore_file.name} с сервера: {e}")
-            # >>> КОНЕЦ НОВОГО КОДА
 
 
 @bot.tree.command(name="optimize_post", description="Улучшает РП-пост.")
