@@ -22,7 +22,7 @@ from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 import re
 import aiohttp
-from fontTools.ttLib import TTFont # <-- НОВЫЙ ИМПОРТ ДЛЯ ПРОВЕРКИ СИМВОЛОВ
+from fontTools.ttLib import TTFont # <-- ИМПОРТ ДЛЯ ПРОВЕРКИ СИМВОЛОВ
 
 # Загрузка переменных окружения из файла .env
 load_dotenv()
@@ -72,10 +72,10 @@ class CharacterSanitizer:
 
     def sanitize(self, text: str) -> str:
         if not self.supported_chars:
-            return text # Если шрифт не загрузился, ничего не делаем, чтобы не стирать весь текст
+            return text
         
         sanitized_chars = []
-        for char in text:
+        for char in str(text): # Убедимся что работаем со строкой
             if ord(char) in self.supported_chars:
                 sanitized_chars.append(char)
             else:
@@ -83,10 +83,7 @@ class CharacterSanitizer:
         return "".join(sanitized_chars)
 
 
-# --- 3. СИСТЕМНЫЕ ПРОМПТЫ (без изменений) ---
-# ... (остальная часть вашего кода до команды update_lore остается без изменений) ...
-
-# --- 3. СИСТЕМНЫЕ ПРОМПТЫ (без изменений) ---
+# --- 3. СИСТЕМНЫЕ ПРОМПТЫ ---
 def get_optimizer_prompt(level):
     """Возвращает системный промпт для оптимизации РП-постов."""
     return f"""
@@ -163,7 +160,7 @@ def get_lore_prompt():
 --- КОНЕЦ ДОКУМЕНТА С ЛОРОМ ---
 """
 
-# --- 4. ВСПОМОГАТЕЛЬНЫЙ КОД (без изменений) ---
+# --- 4. ВСПОМОГАТЕЛЬНЫЙ КОД ---
 app = Flask('')
 @app.route('/')
 def home(): return "Bot is alive and running!"
@@ -213,14 +210,14 @@ def load_daily_code():
     save_daily_code(new_code)
     print(f"Сгенерирован новый код на сегодня: {DAILY_ACCESS_CODE}")
 
-# --- 5. НАСТРОЙКА БОТА (без изменений) ---
+# --- 5. НАСТРОЙКА БОТА ---
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
 intents.guilds = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- 6. ЗАДАЧИ И СОБЫТИЯ (без изменений) ---
+# --- 6. ЗАДАЧИ И СОБЫТИЯ ---
 async def send_access_code_to_admin_channel(code: str, title: str, description: str):
     """Отправляет эмбед с кодом доступа на админский сервер."""
     try:
@@ -322,8 +319,8 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         return
 
     pdf = FPDF()
+    sanitizer = None
     try:
-        # --- ИЗМЕНЕНИЕ: Загружаем основной шрифт и СОЗДАЕМ "ОЧИСТИТЕЛЬ" ---
         font_path = 'GalindoCyrillic-Regular.ttf'
         sanitizer = CharacterSanitizer(font_path)
         if not sanitizer.supported_chars:
@@ -335,7 +332,7 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         pdf.add_font('Galindo', 'I', font_path)
         pdf.add_font('Galindo', 'BI', font_path)
         
-    except RuntimeError as e:
+    except Exception as e:
         await interaction.followup.send(f"❌ **Критическая ошибка со шрифтом:** {e}", ephemeral=True)
         return
     
@@ -377,7 +374,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         for channel in sorted_channels:
             pdf.add_page()
             pdf.set_font('Galindo', 'B', 16)
-            # --- ИЗМЕНЕНИЕ: Очищаем текст перед отправкой в PDF ---
             pdf.cell(0, 10, sanitizer.sanitize(f'Канал: {channel.name}'), new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
             pdf.ln(10)
             
@@ -390,7 +386,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                 if message.content:
                     full_lore_text_for_memory += message.content + "\n\n"
                     pdf.set_font('Galindo', '', 12)
-                    # --- ИЗМЕНЕНИЕ: Очищаем HTML перед отправкой ---
                     html_content = robust_markdown_to_html(sanitizer.sanitize(message.content))
                     pdf.write_html(html_content)
                     pdf.ln(5)
@@ -401,26 +396,22 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                         if embed.title:
                             full_lore_text_for_memory += f"**{embed.title}**\n"
                             pdf.set_font('Galindo', 'B', 14)
-                            # --- ИЗМЕНЕНИЕ: Очищаем текст и HTML ---
                             html_title = f"<b>{robust_markdown_to_html(sanitizer.sanitize(embed.title))}</b>"
                             pdf.write_html(html_title)
                             pdf.ln(2)
                         if embed.description:
                             full_lore_text_for_memory += embed.description + "\n"
                             pdf.set_font('Galindo', '', 12)
-                            # --- ИЗМЕНЕНИЕ: Очищаем HTML ---
                             html_desc = robust_markdown_to_html(sanitizer.sanitize(embed.description))
                             pdf.write_html(html_desc)
                             pdf.ln(4)
                         for field in embed.fields:
                             full_lore_text_for_memory += f"**{field.name}**\n{field.value}\n"
                             pdf.set_font('Galindo', 'B', 12)
-                            # --- ИЗМЕНЕНИЕ: Очищаем HTML ---
                             html_field_name = f"<b>{robust_markdown_to_html(sanitizer.sanitize(field.name))}</b>"
                             pdf.write_html(html_field_name)
                             pdf.ln(1)
                             pdf.set_font('Galindo', '', 12)
-                            # --- ИЗМЕНЕНИЕ: Очищаем HTML ---
                             html_field_value = robust_markdown_to_html(sanitizer.sanitize(field.value))
                             pdf.write_html(html_field_value)
                             pdf.ln(4)
@@ -461,7 +452,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                 sorted_threads = sorted(all_threads, key=lambda t: t.created_at)
                 for thread in sorted_threads:
                     pdf.set_font('Galindo', 'I', 14)
-                    # --- ИЗМЕНЕНИЕ: Очищаем текст ---
                     pdf.cell(0, 10, sanitizer.sanitize(f"--- Публикация: {thread.name} ---"), new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L')
                     pdf.ln(5)
                     full_lore_text_for_memory += f"--- Начало публикации: {thread.name} ---\n\n"
@@ -514,9 +504,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     except Exception as e:
         await interaction.followup.send(f"Произошла критическая ошибка при записи или отправке файла: {e}", ephemeral=True)
 
-
-# --- ОСТАЛЬНЫЕ КОМАНДЫ (без изменений) ---
-# ... (остальная часть вашего кода остается без изменений) ...
 
 @bot.tree.command(name="optimize_post", description="Улучшает РП-пост, принимая текст и уровень улучшения.")
 @app_commands.describe(
