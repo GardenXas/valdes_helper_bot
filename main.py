@@ -60,7 +60,6 @@ def load_lore_from_file():
 # --- НОВЫЙ КЛАСС ДЛЯ "ОЧИСТКИ" ТЕКСТА ---
 class CharacterSanitizer:
     def __init__(self, font_path):
-        # 1. Сразу проверяем, на месте ли файл. Это самая частая проблема.
         if not os.path.exists(font_path):
             raise FileNotFoundError(f"Файл шрифта не найден по пути: '{font_path}'. Убедитесь, что он лежит в той же папке, что и main.py.")
 
@@ -68,26 +67,30 @@ class CharacterSanitizer:
             font = TTFont(font_path)
             self.supported_chars = set()
             for table in font['cmap'].tables:
-                # Ищем только стандартные Unicode таблицы символов
                 if table.isUnicode():
                     self.supported_chars.update(table.cmap.keys())
             
-            # Если после проверки таблиц нет ни одного символа, шрифт некорректен
             if not self.supported_chars:
                  raise RuntimeError("Шрифт не содержит Unicode-совместимой таблицы символов (cmap). Файл может быть поврежден.")
 
             print(f"Загружен шрифт {font_path}, найдено {len(self.supported_chars)} поддерживаемых символов.")
             
-            whitelist = {
+            # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+            whitelist_items = {
                 '═', '─', '║', '│', '✅', '❌', '🔑', '⚙️', '▶️', '📝', '📜',
                 '✨', '🚫', '⚠️', '🌟', '📔', '🧬'
             }
-            self.supported_chars.update(ord(char) for char in whitelist)
+            # Превращаем все элементы белого списка в одну длинную строку
+            whitelist_string = "".join(whitelist_items)
+            
+            # Теперь итерируем по этой строке, где каждый 'char' гарантированно
+            # является одиночным символом, и получаем его код.
+            # Это правильно обработает эмодзи из двух частей.
+            self.supported_chars.update(ord(char) for char in whitelist_string)
             print(f"После добавления белого списка, всего {len(self.supported_chars)} поддерживаемых символов.")
+            # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
         except Exception as e:
-            # 2. Если произошла любая другая ошибка при чтении файла, создаём новое исключение,
-            #    которое будет содержать в себе текст оригинальной ошибки.
             raise RuntimeError(f"Не удалось обработать файл шрифта '{font_path}': {e}") from e
 
     def sanitize(self, text: str) -> str:
@@ -343,7 +346,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     try:
         font_path = 'GalindoCyrillic-Regular.ttf'
         
-        # Загрузка и проверка шрифта теперь происходит здесь, внутри CharacterSanitizer
         sanitizer = CharacterSanitizer(font_path)
         
         pdf.add_font('Galindo', '', font_path)
@@ -352,7 +354,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         pdf.add_font('Galindo', 'BI', font_path)
         
     except Exception as e:
-        # Эта секция теперь поймает детальную ошибку от CharacterSanitizer
         await interaction.followup.send(f"❌ **Критическая ошибка со шрифтом:**\n{e}", ephemeral=True)
         return
     
@@ -653,4 +654,3 @@ async def about(interaction: discord.Interaction):
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
-
