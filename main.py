@@ -38,6 +38,14 @@ LORE_PDF_PATH = "lore.pdf" # Константа для пути к PDF
 if not all([DISCORD_TOKEN, GEMINI_API_KEY, MAIN_GUILD_ID, ADMIN_GUILD_ID, CODE_CHANNEL_ID, OWNER_USER_ID, LORE_CHANNEL_IDS]):
     raise ValueError("КРИТИЧЕСКАЯ ОШИБКА: Один из ключей или ID не найден в .env")
 
+# <<< НОВЫЙ КОД: Преобразование ID каналов в int для дальнейшего использования
+try:
+    CODE_CHANNEL_ID = int(CODE_CHANNEL_ID)
+    OWNER_USER_ID = int(OWNER_USER_ID)
+except ValueError:
+    raise ValueError("КРИТИЧЕСКАЯ ОШИБКА: CODE_CHANNEL_ID и OWNER_USER_ID должны быть числами.")
+# >>> КОНЕЦ НОВОГО КОДА
+
 genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
@@ -157,24 +165,60 @@ def load_daily_code():
     try:
         with open(CODE_FILE, 'r') as f: data = json.load(f)
         if data['date'] == datetime.now().strftime('%Y-%m-%d'):
-            DAILY_ACCESS_CODE = data['code']; print(f"Загружен код: {DAILY_ACCESS_CODE}"); return
+            DAILY_ACCESS_CODE = data['code']; print(f"Загружен код на сегодня: {DAILY_ACCESS_CODE}"); return
     except (FileNotFoundError, json.JSONDecodeError): pass
-    DAILY_ACCESS_CODE = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8)); save_daily_code(DAILY_ACCESS_CODE); print(f"Сгенерирован новый код: {DAILY_ACCESS_CODE}")
+    DAILY_ACCESS_CODE = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8)); save_daily_code(DAILY_ACCESS_CODE); print(f"Сгенерирован новый стартовый код: {DAILY_ACCESS_CODE}")
 
 intents = discord.Intents.default(); intents.message_content = True; intents.guilds = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# --- 3. ОСНОВНЫЕ КОМАНДЫ БОТА ---
 @bot.event
 async def on_ready():
-    print(f'Бот {bot.user} запущен!'); load_daily_code()
+    print(f'Бот {bot.user} запущен!');
+    load_daily_code()
+    send_daily_code_task.start() # <<< НОВЫЙ КОД: Запускаем фоновую задачу
     try:
         synced = await bot.tree.sync(); print(f"Синхронизировано {len(synced)} команд.")
     except Exception as e: print(f"Ошибка синхронизации: {e}")
 
+# <<< НОВЫЙ КОД: Задача для автоматической генерации и отправки кода >>>
+SCHEDULED_TIME = time(hour=4, minute=0, tzinfo=timezone.utc) # Устанавливаем время отправки (например, 4:00 UTC)
+
+@tasks.loop(time=SCHEDULED_TIME)
+async def send_daily_code_task():
+    global DAILY_ACCESS_CODE
+    DAILY_ACCESS_CODE = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+    save_daily_code(DAILY_ACCESS_CODE)
+    print(f"Сгенерирован и сохранен новый ежедневный код: {DAILY_ACCESS_CODE}")
+    try:
+        channel = bot.get_channel(CODE_CHANNEL_ID)
+        if channel:
+            embed = discord.Embed(
+                title="🔑 Ежедневный код доступа",
+                description="Новый код для команды `/update_lore` на сегодня:",
+                color=discord.Color.dark_blue(),
+                timestamp=datetime.now()
+            )
+            embed.add_field(name="Код", value=f"```{DAILY_ACCESS_CODE}```")
+            embed.set_footer(text="Этот код действителен 24 часа.")
+            await channel.send(embed=embed)
+            print(f"Ежедневный код успешно отправлен в канал '{channel.name}'.")
+        else:
+            print(f"КРИТИЧЕСКАЯ ОШИБКА: Канал для кода с ID {CODE_CHANNEL_ID} не найден.")
+    except Exception as e:
+        print(f"Произошла ошибка при отправке ежедневного кода: {e}")
+
+@send_daily_code_task.before_loop
+async def before_send_daily_code_task():
+    await bot.wait_until_ready()
+    print("Цикл отправки ежедневного кода готов к запуску.")
+# >>> КОНЕЦ НОВОГО КОДА
+
 @bot.tree.command(name="update_lore", description="[АДМИН] Собирает весь лор в единый PDF-файл.")
 @app_commands.describe(access_code="Ежедневный код доступа")
 async def update_lore(interaction: discord.Interaction, access_code: str):
-    if not (str(interaction.user.id) == OWNER_USER_ID or interaction.user.guild_permissions.administrator):
+    if not (interaction.user.id == OWNER_USER_ID or interaction.user.guild_permissions.administrator):
         return await interaction.response.send_message("❌ **Ошибка доступа:** Только для администраторов.", ephemeral=True)
     if access_code != DAILY_ACCESS_CODE:
         return await interaction.response.send_message("❌ **Неверный код доступа.**", ephemeral=True)
@@ -280,8 +324,12 @@ async def ask_lore(interaction: discord.Interaction, question: str):
     finally:
         if lore_file:
             await asyncio.sleep(1) 
-            genai.delete_file(lore_file.name)
-            print(f"Загруженный файл {lore_file.name} удален с сервера.")
+            try: # <<< НОВЫЙ КОД: Добавлена обработка ошибок при удалении
+                genai.delete_file(lore_file.name)
+                print(f"Загруженный файл {lore_file.name} удален с сервера.")
+            except Exception as e:
+                print(f"Не удалось удалить файл {lore_file.name} с сервера: {e}")
+            # >>> КОНЕЦ НОВОГО КОДА
 
 
 @bot.tree.command(name="optimize_post", description="Улучшает РП-пост.")
