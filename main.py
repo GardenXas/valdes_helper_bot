@@ -18,7 +18,7 @@ from datetime import datetime, time, timezone
 import sys
 import asyncio
 import pytesseract
-from fpdf import FPDF # <-- НОВЫЙ ИМПОРТ
+from fpdf import FPDF
 
 # Загрузка переменных окружения из файла .env
 load_dotenv()
@@ -295,7 +295,7 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     # --- Инициализация PDF ---
     pdf = FPDF()
     try:
-        pdf.add_font('DejaVu', '', 'DejaVuSans.ttf', uni=True)
+        pdf.add_font('Galindo', '', 'GalindoCyrillic-Regular.ttf')
     except RuntimeError:
         await interaction.followup.send("❌ **Критическая ошибка:** Файл шрифта `DejaVuSans.ttf` не найден рядом с `main.py`. Загрузите его на сервер.", ephemeral=True)
         return
@@ -565,3 +565,4 @@ async def about(interaction: discord.Interaction):
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
+
