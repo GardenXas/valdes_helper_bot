@@ -71,45 +71,6 @@ def get_optimizer_prompt(level):
 1.  **ПОВЕСТВОВАНИЕ ОТ ТРЕТЬЕГО ЛИЦА:** Все действия персонажа должны быть написаны от **третьего лица** (Он/Она), даже если игрок написал от первого ('Я делаю').
 2.  **ЗАПРЕТ НА СИМВОЛЫ:** ЗАПРЕЩЕНО использовать любые другие символы для оформления, кроме `** **`, `" "` и `- `. Никаких `()`, `<<>>` и прочего.
 3.  **НЕ БЫТЬ СОАВТОРОМ:** Не добавляй новых действий или мотивации, которых не было в исходном тексте.
-
-**ТВОЙ ПРОЦЕСС РАБОТЫ (КАК РАЗБИРАТЬ ТЕКСТ):**
-Когда получаешь слитный текст от игрока, ты должен мысленно разделить его:
-1.  Прочитай всё предложение.
-2.  Найди слова-маркеры речи, такие как "говоря", "сказал", "крикнул". Текст после них — это прямая речь.
-3.  Найди слова-маркеры звуков, такие как "напевая", "мыча". Текст после них — это звук в кавычках.
-4.  Всё остальное — это действия.
-5.  Собери разобранные части в пост, применяя 'КЛЮЧЕВЫЕ ПРАВИЛА ОФОРМЛЕНИЯ'.
-
-**ПРИМЕР РАЗБОРА СЛОЖНОГО ПОСТА:**
-*   **Текст игрока:** `я встаю с пола и иду на улицу напивая ляляля и говоря какой прекрасный этот день`
-*   **ТВОЙ ПРАВИЛЬНЫЙ РЕЗУЛЬТАТ:**
-    **Он встает с пола и идет на улицу.**
-    "Ля-ля-ля..."
-    - Какой прекрасный этот день!
-
----
-**ЗАДАЧА 1: ПРОВЕРКА НА ГРУБЫЕ ЛОРНЫЕ ОШИБКИ**
-(Проверка на современную технику, магию и т.д. Если нашел — верни "ОШИБКА:")
-
-**ЗАДАЧА 2: ОПТИМИЗАЦИЯ ПОСТА (если ошибок нет)**
-Обработай пост согласно уровню '{level}', соблюдая ВСЕ вышеописанные правила.
-
-*   **Уровень 'Минимальные правки':**
-    *   Твоя единственная задача — разобрать текст игрока на действия, мысли/звуки и речь и **ПЕРЕФОРМАТИРОВАТЬ** его согласно правилам.
-    *   Переведи действия в третье лицо.
-    *   **ЗАПРЕЩЕНО** добавлять, убирать или изменять слова, кроме смены лица повествования (я -> он/она). Только форматирование.
-
-*   **Уровень 'Стандартная оптимизация':**
-    *   Выполни все требования 'Минимальных правок'.
-    *   Исправь грамматические ошибки.
-    *   Можешь добавить **ОДНО** короткое предложение, описывающее эмоцию или деталь окружения.
-
-*   **Уровень 'Максимальная креативность':**
-    *   Выполни все требования 'Стандартной оптимизации'.
-    *   Художественно обогати описание **заявленных игроком действий**.
-
-**ФИНАЛЬНОЕ ПРАВИЛО:**
-Верни ТОЛЬКО готовый текст поста или сообщение об ошибке. Никаких предисловий.
 """
 
 def get_lore_prompt():
@@ -176,7 +137,7 @@ def load_daily_code():
                 print(f"Загружен сегодняшний код доступа: {DAILY_ACCESS_CODE}")
                 return
     except (FileNotFoundError, json.JSONDecodeError):
-        print("Файл с кодом не найден или поврежден. Генерирую новый.")
+        pass # Игнорируем ошибки и просто генерируем новый код
     
     new_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
     DAILY_ACCESS_CODE = new_code
@@ -192,38 +153,24 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # --- 6. УНИВЕРСАЛЬНАЯ ФУНКЦИЯ И ЕЖЕДНЕВНАЯ ЗАДАЧА ГЕНЕРАЦИИ КОДА ---
 async def send_access_code_to_admin_channel(code: str, title: str, description: str):
-    """Отправляет эмбед с кодом доступа на админский сервер."""
     try:
         admin_channel = bot.get_channel(int(CODE_CHANNEL_ID))
         if admin_channel:
-            embed = discord.Embed(
-                title=title,
-                description=description,
-                color=discord.Color.gold(),
-                timestamp=datetime.now()
-            )
+            embed = discord.Embed(title=title, description=description, color=discord.Color.gold(), timestamp=datetime.now())
             embed.add_field(name="Код", value=f"```{code}```")
             embed.set_footer(text="Этот код действителен до конца текущих суток (по UTC).")
             await admin_channel.send(embed=embed)
-        else:
-            print(f"Ошибка: Не удалось найти канал с ID {CODE_CHANNEL_ID} для отправки кода.")
     except Exception as e:
         print(f"Произошла ошибка при отправке кода: {e}")
 
 @tasks.loop(time=time(hour=0, minute=0, tzinfo=timezone.utc))
 async def update_code_task():
     global DAILY_ACCESS_CODE
-    
     new_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
     DAILY_ACCESS_CODE = new_code
     save_daily_code(new_code)
     print(f"Сгенерирован новый ежедневный код: {new_code}")
-    
-    await send_access_code_to_admin_channel(
-        code=new_code,
-        title="🔑 Новый ежедневный код доступа",
-        description=f"Код доступа для команды `/update_lore` на следующие 24 часа:"
-    )
+    await send_access_code_to_admin_channel(code=new_code, title="🔑 Новый ежедневный код доступа", description="Код доступа для команды `/update_lore` на следующие 24 часа:")
 
 @update_code_task.before_loop
 async def before_update_code_task():
@@ -234,16 +181,9 @@ async def on_ready():
     print(f'Бот {bot.user} успешно запущен!')
     load_lore_from_file()
     load_daily_code()
-    
     if not update_code_task.is_running():
         update_code_task.start()
-        
-    await send_access_code_to_admin_channel(
-        code=DAILY_ACCESS_CODE,
-        title="⚙️ Текущий код доступа (После перезапуска)",
-        description="Бот был перезапущен. Вот актуальный код на сегодня:"
-    )
-    
+    await send_access_code_to_admin_channel(code=DAILY_ACCESS_CODE, title="⚙️ Текущий код доступа (После перезапуска)", description="Бот был перезапущен. Вот актуальный код на сегодня:")
     try:
         synced = await bot.tree.sync()
         print(f"Синхронизировано {len(synced)} команд.")
@@ -255,17 +195,12 @@ async def on_ready():
 @bot.tree.command(name="update_lore", description="[АДМИН] Собирает лор из заданных каналов и обновляет файл.")
 @app_commands.describe(access_code="Ежедневный код доступа для подтверждения")
 async def update_lore(interaction: discord.Interaction, access_code: str):
-    is_owner = str(interaction.user.id) == OWNER_USER_ID
-    is_admin = interaction.user.guild_permissions.administrator
-
-    if not (is_owner or is_admin):
+    if str(interaction.user.id) != OWNER_USER_ID and not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("❌ **Ошибка доступа:** Эту команду могут использовать только администраторы сервера.", ephemeral=True)
         return
-        
     if str(interaction.guild.id) != MAIN_GUILD_ID:
         await interaction.response.send_message("❌ **Ошибка доступа:** Эта команда запрещена на данном сервере.", ephemeral=True)
         return
-
     if access_code != DAILY_ACCESS_CODE:
         await interaction.response.send_message("❌ **Неверный код доступа.** Получите актуальный код на администраторском сервере.", ephemeral=True)
         return
@@ -280,10 +215,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         channel_ids = [int(id.strip()) for id in LORE_CHANNEL_IDS.split(',')]
     except ValueError:
         await interaction.followup.send("❌ **Ошибка конфигурации:** Список ID каналов в .env содержит нечисловые значения.", ephemeral=True)
-        return
-        
-    if not channel_ids:
-        await interaction.followup.send("❌ **Ошибка конфигурации:** Список ID каналов в .env пуст.", ephemeral=True)
         return
 
     full_lore_text = ""
@@ -302,18 +233,18 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         async def parse_message(message):
             nonlocal full_lore_text, total_messages_count, image_id_counter, image_map, downloaded_images_count
             
-            # Собираем весь текстовый контент из сообщения в одну переменную
-            current_message_text = ""
+            # Собираем весь текстовый контент в один блок
+            block_content = ""
             if message.content:
-                current_message_text += message.content
-            
+                block_content += message.content
             if message.embeds:
                 for embed in message.embeds:
-                    if embed.title: current_message_text += f"\n**{embed.title}**\n"
-                    if embed.description: current_message_text += embed.description + "\n"
-                    for field in embed.fields: current_message_text += f"**{field.name}**\n{field.value}\n"
-
-            # Обрабатываем все прикрепленные изображения и добавляем их теги в конец текста
+                    if embed.title: block_content += f"\n\n**{embed.title}**\n"
+                    if embed.description: block_content += embed.description + "\n"
+                    for field in embed.fields: block_content += f"**{field.name}**\n{field.value}\n"
+            
+            # Собираем теги для всех изображений в сообщении
+            image_tags = []
             if message.attachments:
                 image_attachments = [att for att in message.attachments if att.content_type and att.content_type.startswith('image/')]
                 for attachment in image_attachments:
@@ -324,25 +255,29 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                     
                     try:
                         await attachment.save(save_path)
-                        # Добавляем тег в конец текстового блока текущего сообщения
-                        current_message_text += f" [IMAGE_{image_id_counter}]"
+                        image_tags.append(f" [IMAGE_{image_id_counter}]")
                         image_map[image_id] = new_filename
                         image_id_counter += 1
                         downloaded_images_count += 1
                     except Exception as e:
                         print(f"Не удалось сохранить изображение {attachment.filename}: {e}")
 
-            # Добавляем итоговый блок (текст + теги) в общий файл, только если в нем есть контент
-            if current_message_text.strip():
-                full_lore_text += current_message_text.strip() + "\n\n"
+            # Добавляем в общий файл, только если есть текст или были скачаны изображения
+            if block_content.strip() or image_tags:
+                final_text = block_content.strip() + "".join(image_tags)
+                full_lore_text += final_text + "\n\n"
                 total_messages_count += 1
 
         if isinstance(channel, discord.ForumChannel):
-            active_threads = channel.threads
-            archived_threads = [thread async for thread in channel.archived_threads(limit=None)]
-            all_threads = sorted(active_threads + archived_threads, key=lambda t: t.created_at)
-
-            for thread in all_threads:
+            all_threads = channel.threads
+            try:
+                archived_threads = [thread async for thread in channel.archived_threads(limit=None)]
+                all_threads.extend(archived_threads)
+            except discord.Forbidden:
+                print(f"Нет прав для доступа к архивным веткам в канале: {channel.name}")
+            
+            sorted_threads = sorted(all_threads, key=lambda t: t.created_at)
+            for thread in sorted_threads:
                 full_lore_text += f"--- Начало публикации: {thread.name} ---\n\n"
                 async for message in thread.history(limit=500, oldest_first=True):
                     await parse_message(message)
@@ -357,7 +292,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     try:
         with open("file.txt", "w", encoding="utf-8") as f:
             f.write(full_lore_text)
-        
         with open(IMAGE_MAP_FILE, "w", encoding="utf-8") as f:
             json.dump(image_map, f, indent=4)
         
@@ -370,27 +304,15 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         embed.add_field(name="Скачано изображений", value=str(downloaded_images_count), inline=True)
         embed.add_field(name="Размер файла", value=f"{file_size:.2f} КБ", inline=True)
         
-        await interaction.followup.send(
-            embed=embed,
-            file=discord.File("file.txt"),
-            ephemeral=True
-        )
-
+        await interaction.followup.send(embed=embed, file=discord.File("file.txt"), ephemeral=True)
         await interaction.followup.send("✅ **Лор обновлен.** Перезапускаюсь для применения изменений через 5 секунд...", ephemeral=True)
         await asyncio.sleep(5)
-        
-        print("Закрываю соединение для корректного перезапуска...")
         await bot.close()
-        
     except Exception as e:
         await interaction.followup.send(f"Произошла критическая ошибка при записи или отправке файла: {e}", ephemeral=True)
 
 @bot.tree.command(name="optimize_post", description="Улучшает РП-пост, принимая текст и уровень улучшения.")
-@app_commands.describe(
-    post_text="Текст вашего поста для улучшения.",
-    optimization_level="Выберите желаемый уровень улучшения.",
-    image="(Опционально) Изображение для дополнительного контекста."
-)
+@app_commands.describe(post_text="Текст вашего поста для улучшения.", optimization_level="Выберите желаемый уровень улучшения.", image="(Опционально) Изображение для дополнительного контекста.")
 @app_commands.choices(optimization_level=[
     discord.app_commands.Choice(name="Минимальные правки", value="minimal"),
     discord.app_commands.Choice(name="Стандартная оптимизация", value="standard"),
@@ -414,13 +336,11 @@ async def optimize_post(interaction: discord.Interaction, post_text: str, optimi
             pil_image = Image.open(io.BytesIO(image_bytes))
             content_to_send.append(pil_image)
         except Exception as e:
-            print(f"Ошибка обработки изображения: {e}")
-            await interaction.followup.send("⚠️ Не удалось обработать прикрепленное изображение, но я попробую улучшить текст без него.", ephemeral=True)
+            await interaction.followup.send("⚠️ Не удалось обработать прикрепленное изображение.", ephemeral=True)
 
     try:
         response = await gemini_model.generate_content_async(content_to_send)
         result_text = response.text.strip()
-
         if result_text.startswith("ОШИБКА:"):
             error_embed = discord.Embed(title="❌ Обнаружена грубая лорная ошибка!", description=result_text.replace("ОШИБКА:", "").strip(), color=discord.Color.red())
             await interaction.followup.send(embed=error_embed, ephemeral=True)
@@ -428,13 +348,11 @@ async def optimize_post(interaction: discord.Interaction, post_text: str, optimi
             embed = discord.Embed(title="✨ Ваш пост был оптимизирован!", color=discord.Color.gold())
             embed.add_field(name="▶️ Оригинал:", value=f"```\n{post_text[:1000]}\n```", inline=False)
             embed.add_field(name="✅ Улучшенная версия (превью):", value=f"{result_text[:1000]}...", inline=False)
-            embed.set_footer(text="Нажмите кнопку ниже, чтобы получить полный текст.")
             view = PostView(result_text)
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
     except Exception as e:
         print(f"Произошла внутренняя ошибка в /optimize_post: {e}")
-        error_embed = discord.Embed(title="🚫 Произошла внутренняя ошибка", description="Не удалось обработать ваш запрос. Пожалуйста, попробуйте еще раз.", color=discord.Color.dark_red())
-        await interaction.followup.send(embed=error_embed, ephemeral=True)
+        await interaction.followup.send(embed=discord.Embed(title="🚫 Произошла внутренняя ошибка", description="Не удалось обработать ваш запрос.", color=discord.Color.dark_red()), ephemeral=True)
 
 @bot.tree.command(name="ask_lore", description="Задать вопрос по миру, правилам и лору 'Вальдеса'")
 @app_commands.describe(question="Ваш вопрос Хранителю знаний.")
@@ -455,7 +373,6 @@ async def ask_lore(interaction: discord.Interaction, question: str):
             try:
                 with open(IMAGE_MAP_FILE, 'r', encoding='utf-8') as f:
                     image_map = json.load(f)
-                
                 filename = image_map.get(image_id)
                 if filename:
                     image_path = os.path.join(LORE_IMAGES_DIR, filename)
@@ -482,40 +399,28 @@ async def ask_lore(interaction: discord.Interaction, question: str):
         print(f"Произошла ошибка при обработке запроса /ask_lore: {e}")
         await interaction.followup.send(embed=discord.Embed(title="🚫 Ошибка в архиве", description="Хранитель знаний не смог найти ответ.", color=discord.Color.dark_red()), ephemeral=True)
 
-
 @bot.tree.command(name="help", description="Показывает информацию обо всех доступных командах.")
 async def help(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="📜 Справка по командам",
-        description="Вот список всех доступных команд и их описание:",
-        color=discord.Color.blue()
-    )
+    embed = discord.Embed(title="📜 Справка по командам", description="Вот список всех доступных команд и их описание:", color=discord.Color.blue())
     embed.add_field(name="/optimize_post", value="Улучшает ваш РП-пост. Принимает текст, уровень улучшения и опционально изображение.", inline=False)
     embed.add_field(name="/ask_lore", value="Задает вопрос Хранителю знаний по миру 'Вальдеса'. Ответ будет виден всем в канале.", inline=False)
     embed.add_field(name="/about", value="Показывает информацию о боте и его создателе.", inline=False)
     embed.add_field(name="/help", value="Показывает это справочное сообщение.", inline=False)
     embed.add_field(name="/update_lore", value="**[Только для администраторов]**\nСобирает лор из всех каналов, обновляет файл и перезапускает бота.", inline=False)
-    
     embed.set_footer(text="Ваш верный помощник в мире Вальдеса.")
-    
     await interaction.response.send_message(embed=embed, ephemeral=True)
-
 
 @bot.tree.command(name="about", description="Показывает информацию о боте и его создателе.")
 async def about(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="О боте 'Хранитель Вальдеса'",
-        description="Я — ассистент, созданный для помощи игрокам и администрации текстового ролевого проекта 'Вальдес'.\n\nМоя главная задача — делать ваше погружение в мир более гладким и интересным, отвечая на вопросы по лору и помогая с качеством ваших постов.",
-        color=discord.Color.gold()
-    )
+    embed = discord.Embed(title="О боте 'Хранитель Вальдеса'", description="Я — ассистент, созданный для помощи игрокам и администрации текстового ролевого проекта 'Вальдес'.", color=discord.Color.gold())
     embed.add_field(name="Разработчик", value="**GX**", inline=True)
     embed.add_field(name="Технологии", value="• Discord.py\n• Google Gemini API", inline=True)
     embed.set_footer(text=f"Бот запущен на сервере: {interaction.guild.name}")
-    
     await interaction.response.send_message(embed=embed, ephemeral=False)
 
 # --- ЗАПУСК БОТА ---
 if __name__ == "__main__":
     keep_alive()
-    bot.run(DISCORD_TOKEN)
+    bot.run(DISCORD_TOKEN)```
+
 
