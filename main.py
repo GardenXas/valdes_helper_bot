@@ -291,13 +291,14 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
 
     pdf = FPDF()
     try:
-        # --- ИЗМЕНЕНО: Используем ваш шрифт ---
+        # --- ИСПРАВЛЕНИЕ: Регистрируем все стили, которые будем использовать ---
         pdf.add_font('Galindo', '', 'GalindoCyrillic-Regular.ttf')
+        pdf.add_font('Galindo', 'B', 'GalindoCyrillic-Regular.ttf') # Для жирного стиля
+        pdf.add_font('Galindo', 'I', 'GalindoCyrillic-Regular.ttf') # Для курсива
     except RuntimeError:
         await interaction.followup.send("❌ **Критическая ошибка:** Файл шрифта `GalindoCyrillic-Regular.ttf` не найден рядом с `main.py`. Загрузите его на сервер.", ephemeral=True)
         return
     
-    # --- ИЗМЕНЕНО: Устанавливаем ваш шрифт по умолчанию ---
     pdf.set_font('Galindo', '', 12)
     
     full_lore_text_for_memory = ""
@@ -317,7 +318,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
 
     for channel in sorted_channels:
         pdf.add_page()
-        # --- ИЗМЕНЕНО: Используем ваш шрифт ---
         pdf.set_font('Galindo', 'B', 16)
         pdf.cell(0, 10, f'Канал: {channel.name}', 0, 1, 'C')
         pdf.ln(10)
@@ -330,7 +330,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
             
             if message.content:
                 full_lore_text_for_memory += message.content + "\n\n"
-                # --- ИЗМЕНЕНО: Используем ваш шрифт ---
                 pdf.set_font('Galindo', '', 12)
                 pdf.write_html(simple_markdown_to_html(message.content))
                 pdf.ln(5)
@@ -340,23 +339,19 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                 for embed in message.embeds:
                     if embed.title:
                         full_lore_text_for_memory += f"**{embed.title}**\n"
-                        # --- ИЗМЕНЕНО: Используем ваш шрифт ---
                         pdf.set_font('Galindo', 'B', 14)
                         pdf.write_html(f"<b>{simple_markdown_to_html(embed.title)}</b>")
                         pdf.ln(2)
                     if embed.description:
                         full_lore_text_for_memory += embed.description + "\n"
-                        # --- ИЗМЕНЕНО: Используем ваш шрифт ---
                         pdf.set_font('Galindo', '', 12)
                         pdf.write_html(simple_markdown_to_html(embed.description))
                         pdf.ln(4)
                     for field in embed.fields:
                         full_lore_text_for_memory += f"**{field.name}**\n{field.value}\n"
-                        # --- ИЗМЕНЕНО: Используем ваш шрифт ---
                         pdf.set_font('Galindo', 'B', 12)
                         pdf.write_html(f"<b>{simple_markdown_to_html(field.name)}</b>")
                         pdf.ln(1)
-                        # --- ИЗМЕНЕНО: Используем ваш шрифт ---
                         pdf.set_font('Galindo', '', 12)
                         pdf.write_html(simple_markdown_to_html(field.value))
                         pdf.ln(4)
@@ -395,7 +390,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
             all_threads = channel.threads + [t async for t in channel.archived_threads(limit=None)]
             sorted_threads = sorted(all_threads, key=lambda t: t.created_at)
             for thread in sorted_threads:
-                # --- ИЗМЕНЕНО: Используем ваш шрифт ---
                 pdf.set_font('Galindo', 'I', 14)
                 pdf.cell(0, 10, f"--- Публикация: {thread.name} ---", 0, 1, 'L')
                 pdf.ln(5)
