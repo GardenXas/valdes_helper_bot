@@ -381,6 +381,7 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
             
             async def process_message(message):
                 nonlocal total_messages_count
+                nonlocal full_lore_text_for_memory # <<< ИСПРАВЛЕНИЕ ЗДЕСЬ
                 content_found = False
                 
                 if message.content:
@@ -621,3 +622,4 @@ async def about(interaction: discord.Interaction):
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
+
