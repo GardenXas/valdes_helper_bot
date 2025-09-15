@@ -19,6 +19,8 @@ import sys
 import asyncio
 import pytesseract
 from fpdf import FPDF
+from fpdf.enums import XPos, YPos # <-- НОВЫЙ ИМПОРТ ДЛЯ ИСПРАВЛЕНИЯ ПРЕДУПРЕЖДЕНИЯ
+import re # <-- НОВЫЙ ИМПОРТ ДЛЯ УЛУЧШЕНИЯ ОБРАБОТКИ MARKDOWN
 
 # Загрузка переменных окружения из файла .env
 load_dotenv()
@@ -249,14 +251,23 @@ async def on_ready():
 
 # --- 7. КОМАНДЫ БОТА ---
 
-def simple_markdown_to_html(text: str) -> str:
-    """Преобразует базовый Discord Markdown в HTML для FPDF."""
+# --- ИЗМЕНЕНИЕ: Улучшенная функция преобразования Markdown ---
+def robust_markdown_to_html(text: str) -> str:
+    """Более надежно преобразует Markdown в HTML для FPDF, обрабатывая вложенность."""
+    # 1. Экранирование базовых HTML-символов
     text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    text = text.replace('**', '<b>').replace('__', '<u>').replace('*', '<i>')
-    # FPDF не поддерживает вложенность, поэтому закроем теги просто
-    text = text.replace('<b>', '<b>', 1).replace('<b>', '</b>', 1)
-    text = text.replace('<u>', '<u>', 1).replace('<u>', '</u>', 1)
-    text = text.replace('<i>', '<i>', 1).replace('<i>', '</i>', 1)
+    
+    # 2. Обработка комбинаций в правильном порядке (от сложного к простому)
+    # ***Текст*** -> <b><i>Текст</i></b>
+    text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>', text)
+    # **Текст** -> <b>Текст</b>
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    # *Текст* -> <i>Текст</i>
+    text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
+    # __Текст__ -> <u>Текст</u>
+    text = re.sub(r'__(.+?)__', r'<u>\1</u>', text)
+    
+    # 3. Замена переносов строк
     return text.replace('\n', '<br/>')
 
 @bot.tree.command(name="update_lore", description="[АДМИН] Собирает лор из каналов в единый PDF-файл.")
@@ -291,10 +302,11 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
 
     pdf = FPDF()
     try:
-        # --- ИСПРАВЛЕНИЕ: Регистрируем все стили, которые будем использовать ---
+        # --- ИЗМЕНЕНИЕ: Регистрируем все необходимые стили и комбинации ---
         pdf.add_font('Galindo', '', 'GalindoCyrillic-Regular.ttf')
-        pdf.add_font('Galindo', 'B', 'GalindoCyrillic-Regular.ttf') # Для жирного стиля
+        pdf.add_font('Galindo', 'B', 'GalindoCyrillic-Regular.ttf') # Для жирного
         pdf.add_font('Galindo', 'I', 'GalindoCyrillic-Regular.ttf') # Для курсива
+        pdf.add_font('Galindo', 'BI', 'GalindoCyrillic-Regular.ttf') # Для жирного курсива
     except RuntimeError:
         await interaction.followup.send("❌ **Критическая ошибка:** Файл шрифта `GalindoCyrillic-Regular.ttf` не найден рядом с `main.py`. Загрузите его на сервер.", ephemeral=True)
         return
@@ -319,7 +331,8 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     for channel in sorted_channels:
         pdf.add_page()
         pdf.set_font('Galindo', 'B', 16)
-        pdf.cell(0, 10, f'Канал: {channel.name}', 0, 1, 'C')
+        # --- ИЗМЕНЕНИЕ: Исправляем DeprecationWarning ---
+        pdf.cell(0, 10, f'Канал: {channel.name}', new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
         pdf.ln(10)
         
         full_lore_text_for_memory += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
@@ -331,7 +344,8 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
             if message.content:
                 full_lore_text_for_memory += message.content + "\n\n"
                 pdf.set_font('Galindo', '', 12)
-                pdf.write_html(simple_markdown_to_html(message.content))
+                # --- ИЗМЕНЕНИЕ: Используем новую надежную функцию ---
+                pdf.write_html(robust_markdown_to_html(message.content))
                 pdf.ln(5)
                 content_found = True
             
@@ -340,20 +354,20 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                     if embed.title:
                         full_lore_text_for_memory += f"**{embed.title}**\n"
                         pdf.set_font('Galindo', 'B', 14)
-                        pdf.write_html(f"<b>{simple_markdown_to_html(embed.title)}</b>")
+                        pdf.write_html(f"<b>{robust_markdown_to_html(embed.title)}</b>")
                         pdf.ln(2)
                     if embed.description:
                         full_lore_text_for_memory += embed.description + "\n"
                         pdf.set_font('Galindo', '', 12)
-                        pdf.write_html(simple_markdown_to_html(embed.description))
+                        pdf.write_html(robust_markdown_to_html(embed.description))
                         pdf.ln(4)
                     for field in embed.fields:
                         full_lore_text_for_memory += f"**{field.name}**\n{field.value}\n"
                         pdf.set_font('Galindo', 'B', 12)
-                        pdf.write_html(f"<b>{simple_markdown_to_html(field.name)}</b>")
+                        pdf.write_html(f"<b>{robust_markdown_to_html(field.name)}</b>")
                         pdf.ln(1)
                         pdf.set_font('Galindo', '', 12)
-                        pdf.write_html(simple_markdown_to_html(field.value))
+                        pdf.write_html(robust_markdown_to_html(field.value))
                         pdf.ln(4)
                     full_lore_text_for_memory += "\n"
                 content_found = True
@@ -391,7 +405,8 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
             sorted_threads = sorted(all_threads, key=lambda t: t.created_at)
             for thread in sorted_threads:
                 pdf.set_font('Galindo', 'I', 14)
-                pdf.cell(0, 10, f"--- Публикация: {thread.name} ---", 0, 1, 'L')
+                # --- ИЗМЕНЕНИЕ: Исправляем DeprecationWarning ---
+                pdf.cell(0, 10, f"--- Публикация: {thread.name} ---", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L')
                 pdf.ln(5)
                 full_lore_text_for_memory += f"--- Начало публикации: {thread.name} ---\n\n"
                 async for message in thread.history(limit=500, oldest_first=True):
