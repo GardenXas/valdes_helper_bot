@@ -291,6 +291,7 @@ def robust_markdown_to_html(text: str) -> str:
 @bot.tree.command(name="update_lore", description="[АДМИН] Собирает лор из каналов в единый PDF-файл.")
 @app_commands.describe(access_code="Ежедневный код доступа для подтверждения")
 async def update_lore(interaction: discord.Interaction, access_code: str):
+    # (Весь код проверки прав доступа остается без изменений)
     is_owner = str(interaction.user.id) == OWNER_USER_ID
     is_admin = interaction.user.guild_permissions.administrator
 
@@ -354,22 +355,44 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     sorted_channels = sorted(channels_to_parse, key=lambda c: c.position)
 
     async with aiohttp.ClientSession() as session:
+        # ИЗМЕНЕНИЕ ЗДЕСЬ: Функция для обработки и сжатия изображений
         async def process_image_from_bytes(image_bytes: bytes, filename: str):
             nonlocal full_lore_text_for_memory, total_images_count
             try:
+                print(f"Обработка изображения: {filename}...")
                 img = Image.open(io.BytesIO(image_bytes))
+
+                # --- 1. OCR (распознавание текста) ---
+                # Распознаем текст до любого сжатия, чтобы сохранить качество
                 ocr_text = pytesseract.image_to_string(img, lang='rus+eng')
                 if ocr_text.strip():
                     full_lore_text_for_memory += f"--- Начало текста из изображения: {filename} ---\n{ocr_text.strip()}\n--- Конец текста ---\n\n"
+
+                # --- 2. СЖАТИЕ ИЗОБРАЖЕНИЯ ДЛЯ PDF ---
+                # Конвертируем в RGB, чтобы избавиться от прозрачности (необходимо для JPEG)
+                if img.mode in ('RGBA', 'P', 'LA'):
+                    img = img.convert('RGB')
+                
+                # Создаем буфер в памяти для сжатого изображения
+                compressed_buffer = io.BytesIO()
+                # Сохраняем в буфер как JPEG с качеством 75%
+                img.save(compressed_buffer, format='JPEG', quality=75, optimize=True)
+                compressed_buffer.seek(0)
+                print(f"Изображение {filename} успешно сжато.")
+
+                # --- 3. ВСТАВКА В PDF ---
+                # Рассчитываем размеры, чтобы вписать в страницу
                 page_width = pdf.w - pdf.l_margin - pdf.r_margin
                 ratio = img.height / img.width
                 img_width = page_width
                 img_height = page_width * ratio
-                pdf.image(io.BytesIO(image_bytes), w=img_width, h=img_height)
+
+                # Вставляем сжатое изображение из буфера
+                pdf.image(compressed_buffer, w=img_width, h=img_height, type='JPEG')
                 pdf.ln(5)
                 total_images_count += 1
             except Exception as e:
-                print(f"Не удалось обработать изображение {filename}: {e}")
+                print(f"Не удалось обработать или сжать изображение {filename}: {e}")
 
         for channel in sorted_channels:
             pdf.add_page()
@@ -380,8 +403,7 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
             full_lore_text_for_memory += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
             
             async def process_message(message):
-                nonlocal total_messages_count
-                nonlocal full_lore_text_for_memory # <<< ИСПРАВЛЕНИЕ ЗДЕСЬ
+                nonlocal total_messages_count, full_lore_text_for_memory
                 content_found = False
                 
                 if message.content:
@@ -392,6 +414,7 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                     pdf.ln(5)
                     content_found = True
                 
+                # (Код обработки эмбедов и остальной логики остается без изменений)
                 if message.embeds:
                     for embed in message.embeds:
                         if embed.title:
@@ -477,15 +500,16 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         
         pdf_size_mb = os.path.getsize(pdf_output_filename) / (1024 * 1024)
         
-        embed = discord.Embed(title="✅ Лор успешно собран в PDF!", description=f"Файл `{pdf_output_filename}` был создан и прикреплен к этому сообщению.", color=discord.Color.green())
+        embed = discord.Embed(title="✅ Лор успешно собран в PDF!", description=f"Файл `{pdf_output_filename}` был создан и прикреплен к этому сообщению.\n**Все изображения были автоматически сжаты.**", color=discord.Color.green())
         embed.add_field(name="Обработано каналов", value=str(parsed_channels_count), inline=True)
         embed.add_field(name="Собрано сообщений", value=str(total_messages_count), inline=True)
         embed.add_field(name="Вставлено изображений", value=str(total_images_count), inline=True)
-        embed.add_field(name="Размер PDF", value=f"{pdf_size_mb:.2f} МБ", inline=True)
+        embed.add_field(name="Итоговый размер PDF", value=f"{pdf_size_mb:.2f} МБ", inline=True)
         
+        # Проверка размера файла остаётся как страховка
         if pdf_size_mb > 24:
             await interaction.followup.send(
-                content="⚠️ **Внимание:** Размер PDF-файла превышает 25 МБ. Я не могу отправить его в Discord. Файл сохранен на сервере.",
+                content="⚠️ **Внимание:** Размер PDF-файла всё ещё превышает 25 МБ даже после сжатия. Я не могу отправить его в Discord. Файл сохранен на сервере.",
                 embed=embed,
                 ephemeral=True
             )
@@ -622,4 +646,3 @@ async def about(interaction: discord.Interaction):
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
-
