@@ -20,6 +20,7 @@ import asyncio
 import re
 import shutil
 import aiohttp
+from typing import List
 
 # Загрузка переменных окружения из файла .env
 load_dotenv()
@@ -40,10 +41,13 @@ if not all([DISCORD_TOKEN, GEMINI_API_KEY, MAIN_GUILD_ID, ADMIN_GUILD_ID, CODE_C
 genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel('gemini-1.5-flash')
 
-# --- 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И ФУНКЦИИ ДЛЯ ЛОРА ---
+# --- 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И ФУНКЦИИ ---
 VALDES_LORE = ""
 LORE_IMAGES_DIR = "lore_images"
 IMAGE_MAP_FILE = "image_map.json"
+# ⭐ НОВОЕ: Файл для хранения данных о персонажах
+CHARACTER_DATA_FILE = "characters.json"
+CHARACTERS_DATA = {}
 
 def load_lore_from_file():
     """Загружает/перезагружает лор из файла в память бота."""
@@ -56,12 +60,40 @@ def load_lore_from_file():
         print("КРИТИЧЕСКАЯ ОШИБКА: Файл 'file.txt' не найден.")
         VALDES_LORE = "Лор не был загружен из-за отсутствия файла."
 
+# ⭐ НОВЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С ПЕРСОНАЖАМИ
+def load_characters():
+    """Загружает данные персонажей из JSON-файла."""
+    global CHARACTERS_DATA
+    try:
+        with open(CHARACTER_DATA_FILE, 'r', encoding='utf-8') as f:
+            CHARACTERS_DATA = json.load(f)
+        print("Данные персонажей успешно загружены.")
+    except (FileNotFoundError, json.JSONDecodeError):
+        CHARACTERS_DATA = {}
+        print("Файл персонажей не найден или пуст. Будет создан новый.")
+
+def save_characters():
+    """Сохраняет данные персонажей в JSON-файл."""
+    with open(CHARACTER_DATA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(CHARACTERS_DATA, f, indent=4)
+
 # --- 3. СИСТЕМНЫЕ ПРОМПТЫ ---
-def get_optimizer_prompt(level):
+# ⭐ УЛУЧШЕННЫЙ ПРОМПТ
+def get_optimizer_prompt(level, character_info=None):
     """Возвращает системный промпт для оптимизации РП-постов."""
+    
+    character_context_prompt = ""
+    if character_info:
+        character_context_prompt = f"""
+**КОНТЕКСТ О ПЕРСОНАЖЕ (ИСПОЛЬЗУЙ ЭТО ОБЯЗАТЕЛЬНО):**
+- **Имя:** {character_info['name']}
+- **Описание и характер:** {character_info['description']}
+Основывайся на этой информации, чтобы сохранить стиль персонажа, его манеру речи и мышления.
+"""
+
     return f"""
 Ты — ассистент для текстового ролевого проекта 'Вальдес'. Твоя задача — идеально отформатировать и, при необходимости, улучшить пост игрока.
-
+{character_context_prompt}
 **КЛЮЧЕВЫЕ ПРАВИЛА ОФОРМЛЕНИЯ ПОСТА (САМОЕ ВАЖНОЕ):**
 1.  **ДЕЙСТВИЯ:** Все действия персонажа должны быть заключены в двойные звездочки. Пример: `**Он поднялся с кровати.**`
 2.  **МЫСЛИ И ЗВУКИ:** Все мысли персонажа, а также напевание, мычание и т.д., должны быть заключены в обычные кавычки. Пример: `"Какой сегодня прекрасный день."` или `"Ммм-хмм..."`
@@ -71,7 +103,7 @@ def get_optimizer_prompt(level):
 **ЗОЛОТЫЕ ПРАВИЛА ОБРАБОТКИ:**
 1.  **ПОВЕСТВОВАНИЕ ОТ ТРЕТЬЕГО ЛИЦА:** Все действия персонажа должны быть написаны от **третьего лица** (Он/Она), даже если игрок написал от первого ('Я делаю').
 2.  **ЗАПРЕТ НА СИМВОЛЫ:** ЗАПРЕЩЕНО использовать любые другие символы для оформления, кроме `** **`, `" "` и `- `. Никаких `()`, `<<>>` и прочего.
-3.  **НЕ БЫТЬ СОАВТОРОМ:** Не добавляй новых действий или мотивации, которых не было в исходном тексте.
+3.  **НЕ БЫТЬ СОАВТОРОМ:** Не добавляй новых действий или мотивации, которых не было в исходном тексте. Ты редактор, а не соавтор.
 """
 
 def get_lore_prompt():
@@ -182,6 +214,8 @@ async def on_ready():
     print(f'Бот {bot.user} успешно запущен!')
     load_lore_from_file()
     load_daily_code()
+    # ⭐ НОВОЕ: Загрузка данных персонажей при старте
+    load_characters() 
     if not update_code_task.is_running():
         update_code_task.start()
     await send_access_code_to_admin_channel(code=DAILY_ACCESS_CODE, title="⚙️ Текущий код доступа (После перезапуска)", description="Бот был перезапущен. Вот актуальный код на сегодня:")
@@ -285,11 +319,9 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                 
                 content_parts = []
                 
-                # 1. Основной текст сообщения (уже очищенный)
                 if message.content:
                     content_parts.append(clean_discord_mentions(message.content.strip(), guild))
                 
-                # 2. Обработка эмбедов
                 if message.embeds:
                     for embed in message.embeds:
                         embed_text_parts = []
@@ -311,7 +343,6 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                             field_text = f"**{field_name}**\n{field_value}"
                             content_parts.append(field_text)
                 
-                # 3. Обработка прикрепленных файлов
                 if message.attachments:
                     image_attachments = [att for att in message.attachments if att.content_type and att.content_type.startswith('image/')]
                     for attachment in image_attachments:
@@ -335,11 +366,11 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                 for thread in sorted_threads:
                     full_lore_text += f"--- Начало публикации: {thread.name} ---\n\n"
                     async for message in thread.history(limit=500, oldest_first=True):
-                        await parse_message(message, interaction.guild) # Передаем guild
+                        await parse_message(message, interaction.guild)
                     full_lore_text += f"--- Конец публикации: {thread.name} ---\n\n"
             else:
                 async for message in channel.history(limit=500, oldest_first=True):
-                    await parse_message(message, interaction.guild) # Передаем guild
+                    await parse_message(message, interaction.guild)
 
             full_lore_text += f"--- КОНЕЦ КАНАЛА: {channel.name} ---\n"
             parsed_channels_count += 1
@@ -353,13 +384,13 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         load_lore_from_file()
         file_size = os.path.getsize("file.txt") / 1024
         
-        embed = discord.Embed(title="✅ Лор успешно обновлен!", description="Файл `file.txt` был перезаписан и прикреплен к этому сообщению для проверки.", color=discord.Color.green())
+        embed = discord.Embed(title="✅ Лор успешно обновлен!", description="Файл `file.txt` был перезаписан.", color=discord.Color.green())
         embed.add_field(name="Обработано каналов", value=str(parsed_channels_count), inline=True)
         embed.add_field(name="Собрано сообщений", value=str(total_messages_count), inline=True)
         embed.add_field(name="Скачано изображений", value=str(downloaded_images_count), inline=True)
         embed.add_field(name="Размер файла", value=f"{file_size:.2f} КБ", inline=True)
         
-        await interaction.followup.send(embed=embed, file=discord.File("file.txt"), ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         await interaction.followup.send("✅ **Лор обновлен.** Перезапускаюсь для применения изменений через 5 секунд...", ephemeral=True)
         await asyncio.sleep(5)
         await bot.close()
@@ -381,8 +412,20 @@ async def optimize_post(interaction: discord.Interaction, post_text: str, optimi
         await interaction.followup.send("❌ **Ошибка:** Прикрепленный файл не является изображением.", ephemeral=True)
         return
 
+    # ⭐ НОВОЕ: Получение данных активного персонажа
+    user_id = str(interaction.user.id)
+    active_character_info = None
+    if user_id in CHARACTERS_DATA and CHARACTERS_DATA[user_id]['active_character']:
+        active_char_name = CHARACTERS_DATA[user_id]['active_character']
+        # Находим объект персонажа по имени
+        for char in CHARACTERS_DATA[user_id]['characters']:
+            if char['name'] == active_char_name:
+                active_character_info = char
+                break
+
     level_map = {"minimal": "Минимальные правки", "standard": "Стандартная оптимизация", "creative": "Максимальная креативность"}
-    prompt = get_optimizer_prompt(level_map[optimization_level.value])
+    # ⭐ Передаем данные персонажа в промпт
+    prompt = get_optimizer_prompt(level_map[optimization_level.value], active_character_info)
     
     content_to_send = [prompt, f"\n\nПост игрока:\n---\n{post_text}"]
     
@@ -397,15 +440,16 @@ async def optimize_post(interaction: discord.Interaction, post_text: str, optimi
     try:
         response = await gemini_model.generate_content_async(content_to_send)
         result_text = response.text.strip()
-        if result_text.startswith("ОШИБКА:"):
-            error_embed = discord.Embed(title="❌ Обнаружена грубая лорная ошибка!", description=result_text.replace("ОШИБКА:", "").strip(), color=discord.Color.red())
-            await interaction.followup.send(embed=error_embed, ephemeral=True)
-        else:
-            embed = discord.Embed(title="✨ Ваш пост был оптимизирован!", color=discord.Color.gold())
-            embed.add_field(name="▶️ Оригинал:", value=f"```\n{post_text[:1000]}\n```", inline=False)
-            embed.add_field(name="✅ Улучшенная версия (превью):", value=f"{result_text[:1000]}...", inline=False)
-            view = PostView(result_text)
-            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+        embed = discord.Embed(title="✨ Ваш пост был оптимизирован!", color=discord.Color.gold())
+        if active_character_info:
+            embed.set_author(name=f"Персонаж: {active_character_info['name']}", icon_url=active_character_info.get('avatar_url'))
+        
+        embed.add_field(name="▶️ Оригинал:", value=f"```\n{post_text[:1000]}\n```", inline=False)
+        embed.add_field(name="✅ Улучшенная версия (превью):", value=f"{result_text[:1000]}...", inline=False)
+        view = PostView(result_text)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
     except Exception as e:
         print(f"Произошла внутренняя ошибка в /optimize_post: {e}")
         await interaction.followup.send(embed=discord.Embed(title="🚫 Произошла внутренняя ошибка", description="Не удалось обработать ваш запрос.", color=discord.Color.dark_red()), ephemeral=True)
@@ -458,11 +502,12 @@ async def ask_lore(interaction: discord.Interaction, question: str):
 @bot.tree.command(name="help", description="Показывает информацию обо всех доступных командах.")
 async def help(interaction: discord.Interaction):
     embed = discord.Embed(title="📜 Справка по командам", description="Вот список всех доступных команд и их описание:", color=discord.Color.blue())
-    embed.add_field(name="/optimize_post", value="Улучшает ваш РП-пост. Принимает текст, уровень улучшения и опционально изображение.", inline=False)
+    embed.add_field(name="/character [add/delete/select/view]", value="Управление вашими персонажами для улучшения работы других команд.", inline=False)
+    embed.add_field(name="/optimize_post", value="Улучшает ваш РП-пост. Использует данные активного персонажа для лучшего результата.", inline=False)
     embed.add_field(name="/ask_lore", value="Задает вопрос Хранителю знаний по миру 'Вальдеса'. Ответ будет виден всем в канале.", inline=False)
     embed.add_field(name="/about", value="Показывает информацию о боте и его создателе.", inline=False)
     embed.add_field(name="/help", value="Показывает это справочное сообщение.", inline=False)
-    embed.add_field(name="/update_lore", value="**[Только для администраторов]**\nСобирает лор из всех каналов, обновляет файл и перезапускает бота.", inline=False)
+    embed.add_field(name="/update_lore", value="**[Только для администраторов]**\nСобирает лор, обновляет файл и перезапускает бота.", inline=False)
     embed.set_footer(text="Ваш верный помощник в мире Вальдеса.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -473,6 +518,136 @@ async def about(interaction: discord.Interaction):
     embed.add_field(name="Технологии", value="• Discord.py\n• Google Gemini API", inline=True)
     embed.set_footer(text=f"Бот запущен на сервере: {interaction.guild.name}")
     await interaction.response.send_message(embed=embed, ephemeral=False)
+
+# --- 8. ⭐ НОВЫЙ БЛОК: УПРАВЛЕНИЕ ПЕРСОНАЖАМИ ---
+character_group = app_commands.Group(name="character", description="Управление вашими персонажами")
+
+async def character_name_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+    user_id = str(interaction.user.id)
+    if user_id not in CHARACTERS_DATA:
+        return []
+    
+    chars = CHARACTERS_DATA.get(user_id, {}).get('characters', [])
+    return [
+        app_commands.Choice(name=char['name'], value=char['name'])
+        for char in chars if current.lower() in char['name'].lower()
+    ]
+
+@character_group.command(name="add", description="Добавить нового персонажа в систему.")
+@app_commands.describe(name="Имя вашего персонажа.", description="Краткое описание характера, внешности, манер.", avatar="Изображение вашего персонажа.")
+async def character_add(interaction: discord.Interaction, name: str, description: str, avatar: discord.Attachment):
+    if not avatar.content_type or not avatar.content_type.startswith('image/'):
+        await interaction.response.send_message("❌ Файл для аватара должен быть изображением.", ephemeral=True)
+        return
+
+    user_id = str(interaction.user.id)
+
+    # Инициализация пользователя, если его нет
+    if user_id not in CHARACTERS_DATA:
+        CHARACTERS_DATA[user_id] = {"active_character": None, "characters": []}
+
+    # Проверка на дубликат имени
+    if any(char['name'] == name for char in CHARACTERS_DATA[user_id]['characters']):
+        await interaction.response.send_message(f"❌ Персонаж с именем '{name}' у вас уже существует.", ephemeral=True)
+        return
+
+    new_char = {
+        "name": name,
+        "description": description,
+        "avatar_url": avatar.url
+    }
+    CHARACTERS_DATA[user_id]['characters'].append(new_char)
+    
+    # Если это первый персонаж, делаем его активным
+    if not CHARACTERS_DATA[user_id]['active_character']:
+        CHARACTERS_DATA[user_id]['active_character'] = name
+
+    save_characters()
+    
+    embed = discord.Embed(title=f"✅ Персонаж '{name}' успешно добавлен!", color=discord.Color.green())
+    embed.set_thumbnail(url=avatar.url)
+    embed.add_field(name="Описание", value=description, inline=False)
+    if CHARACTERS_DATA[user_id]['active_character'] == name:
+         embed.set_footer(text="Он автоматически выбран как активный.")
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@character_group.command(name="delete", description="Удалить вашего персонажа из системы.")
+@app_commands.describe(name="Имя персонажа, которого хотите удалить.")
+@app_commands.autocomplete(name=character_name_autocomplete)
+async def character_delete(interaction: discord.Interaction, name: str):
+    user_id = str(interaction.user.id)
+    
+    if user_id not in CHARACTERS_DATA or not CHARACTERS_DATA[user_id]['characters']:
+        await interaction.response.send_message("❌ У вас нет зарегистрированных персонажей.", ephemeral=True)
+        return
+
+    char_to_delete = next((char for char in CHARACTERS_DATA[user_id]['characters'] if char['name'] == name), None)
+
+    if not char_to_delete:
+        await interaction.response.send_message(f"❌ Персонаж с именем '{name}' не найден.", ephemeral=True)
+        return
+
+    CHARACTERS_DATA[user_id]['characters'].remove(char_to_delete)
+    
+    # Если удалили активного персонажа, сбрасываем активного
+    if CHARACTERS_DATA[user_id]['active_character'] == name:
+        CHARACTERS_DATA[user_id]['active_character'] = None
+        # И если есть другие персонажи, делаем первого из них активным
+        if CHARACTERS_DATA[user_id]['characters']:
+            CHARACTERS_DATA[user_id]['active_character'] = CHARACTERS_DATA[user_id]['characters'][0]['name']
+
+    save_characters()
+    await interaction.response.send_message(f"✅ Персонаж '{name}' был успешно удален.", ephemeral=True)
+
+
+@character_group.command(name="select", description="Выбрать активного персонажа для использования в командах.")
+@app_commands.describe(name="Имя персонажа, которого хотите сделать активным.")
+@app_commands.autocomplete(name=character_name_autocomplete)
+async def character_select(interaction: discord.Interaction, name: str):
+    user_id = str(interaction.user.id)
+    
+    if user_id not in CHARACTERS_DATA or not CHARACTERS_DATA[user_id]['characters']:
+        await interaction.response.send_message("❌ У вас нет зарегистрированных персонажей.", ephemeral=True)
+        return
+        
+    char_to_select = next((char for char in CHARACTERS_DATA[user_id]['characters'] if char['name'] == name), None)
+    
+    if not char_to_select:
+        await interaction.response.send_message(f"❌ Персонаж с именем '{name}' не найден.", ephemeral=True)
+        return
+
+    CHARACTERS_DATA[user_id]['active_character'] = name
+    save_characters()
+    
+    embed = discord.Embed(title="👤 Активный персонаж изменен", description=f"Теперь ваши команды будут использовать профиль **{name}**.", color=discord.Color.blue())
+    embed.set_thumbnail(url=char_to_select.get('avatar_url'))
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@character_group.command(name="view", description="Показать информацию о вашем текущем активном персонаже.")
+async def character_view(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+    
+    if user_id not in CHARACTERS_DATA or not CHARACTERS_DATA[user_id]['active_character']:
+        await interaction.response.send_message("❌ У вас не выбран активный персонаж. Добавьте его через `/character add`.", ephemeral=True)
+        return
+        
+    active_char_name = CHARACTERS_DATA[user_id]['active_character']
+    active_char_info = next((char for char in CHARACTERS_DATA[user_id]['characters'] if char['name'] == active_char_name), None)
+
+    if not active_char_info:
+         await interaction.response.send_message("❌ Ошибка: данные активного персонажа не найдены.", ephemeral=True)
+         return
+
+    embed = discord.Embed(title=f"Профиль персонажа: {active_char_info['name']}", description=active_char_info['description'], color=discord.Color.purple())
+    embed.set_thumbnail(url=active_char_info.get('avatar_url'))
+    embed.set_footer(text="Этот персонаж сейчас активен для команд.")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+bot.tree.add_command(character_group)
 
 # --- ЗАПУСК БОТА ---
 if __name__ == "__main__":
