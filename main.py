@@ -95,6 +95,33 @@ def get_lore_prompt():
 --- КОНЕЦ ДОКУМЕНТА С ЛОРОМ ---
 """
 
+# НОВЫЙ ПРОМПТ ДЛЯ ГЕНЕРАЦИИ АНКЕТ
+def get_character_prompt():
+    """Возвращает системный промпт для генерации анкеты персонажа."""
+    return f"""
+Ты — Мастер-создатель персонажей для текстового ролевого проекта 'Вальдес'. Твоя задача — написать детальную и интересную анкету персонажа, который органично впишется в этот мир.
+
+**СТРУКТУРА АНКЕТЫ (ОБЯЗАТЕЛЬНО):**
+Анкета должна содержать следующие разделы, выделенные жирным шрифтом:
+- **Имя:**
+- **Возраст:**
+- **Раса:** (Должна соответствовать лору мира)
+- **Внешность:** (Подробное описание, 2-3 предложения)
+- **Характер:** (Ключевые черты, манеры, мировоззрение, 2-3 предложения)
+- **Предыстория:** (Краткая, но емкая история жизни, ключевые события, 3-4 предложения)
+- **Навыки и способности:** (Что персонаж умеет делать, 2-3 пункта)
+
+**ПРАВИЛА ГЕНЕРАЦИИ:**
+1.  **ЛОР — ЭТО ЗАКОН:** Используй приведенный ниже текст с лором как основной источник информации о мире, расах, местах и событиях. Не придумывай того, что противоречит лору.
+2.  **КРЕАТИВНОСТЬ:** На основе запроса игрока или при случайной генерации заполни пробелы, добавь интересные детали, сделай персонажа живым и уникальным.
+3.  **ФОРМАТ:** Выдай в ответе ТОЛЬКО текст анкеты по указанной структуре. Никаких приветствий, вступлений или лишних фраз. Только анкета.
+
+--- НАЧАЛО ДОКУМЕНТА С ЛОРОМ ---
+{VALDES_LORE}
+--- КОНЕЦ ДОКУМЕНТА С ЛОРОМ ---
+"""
+
+
 # --- 4. ВСПОМОГАТЕЛЬНЫЙ КОД (keep_alive, UI, работа с кодом доступа) ---
 app = Flask('')
 @app.route('/')
@@ -118,6 +145,25 @@ class PostView(ui.View):
     @ui.button(label="📝 Показать и скопировать текст", style=discord.ButtonStyle.primary)
     async def show_modal_button(self, interaction: discord.Interaction, button: ui.Button):
         modal = OptimizedPostModal(self.optimized_text)
+        await interaction.response.send_modal(modal)
+
+# НОВЫЕ UI ЭЛЕМЕНТЫ ДЛЯ АНКЕТЫ
+class CharacterSheetModal(ui.Modal, title='Анкета персонажа'):
+    def __init__(self, character_sheet_text: str):
+        super().__init__(timeout=None)
+        # Модальные окна имеют ограничение в 4000 символов
+        self.sheet_content = ui.TextInput(label="Текст анкеты готов к копированию", style=discord.TextStyle.paragraph, default=character_sheet_text, max_length=4000)
+        self.add_item(self.sheet_content)
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.send_message("Окно закрыто.", ephemeral=True, delete_after=3)
+
+class CharacterSheetView(ui.View):
+    def __init__(self, character_sheet_text: str):
+        super().__init__(timeout=300)
+        self.character_sheet_text = character_sheet_text
+    @ui.button(label="📝 Показать и скопировать анкету", style=discord.ButtonStyle.primary)
+    async def show_modal_button(self, interaction: discord.Interaction, button: ui.Button):
+        modal = CharacterSheetModal(self.character_sheet_text)
         await interaction.response.send_modal(modal)
 
 DAILY_ACCESS_CODE = ""
@@ -410,6 +456,47 @@ async def optimize_post(interaction: discord.Interaction, post_text: str, optimi
         print(f"Произошла внутренняя ошибка в /optimize_post: {e}")
         await interaction.followup.send(embed=discord.Embed(title="🚫 Произошла внутренняя ошибка", description="Не удалось обработать ваш запрос.", color=discord.Color.dark_red()), ephemeral=True)
 
+
+# ⭐ НОВАЯ КОМАНДА ⭐
+@bot.tree.command(name="generate_character", description="Создает анкету персонажа для мира 'Вальдес'.")
+@app_commands.describe(
+    params="Опишите желаемые параметры (например: 'молодая эльфийка, лучница из лесов').",
+    randomize="Создать полностью случайного персонажа? (игнорирует поле с параметрами)."
+)
+async def generate_character(interaction: discord.Interaction, params: str = None, randomize: bool = False):
+    await interaction.response.defer(ephemeral=False, thinking=True)
+
+    if not params and not randomize:
+        await interaction.followup.send("❌ **Ошибка:** Вы должны либо описать персонажа в параметрах, либо выбрать опцию `randomize: True`.", ephemeral=True)
+        return
+
+    try:
+        prompt = get_character_prompt()
+        
+        if randomize:
+            user_request = "Запрос игрока: Создай полностью случайного, но интересного и лорного персонажа для мира Вальдес."
+        else:
+            user_request = f"Запрос игрока: Создай персонажа на основе следующего описания - '{params}'."
+
+        response = await gemini_model.generate_content_async([prompt, user_request])
+        result_text = response.text.strip()
+
+        embed = discord.Embed(
+            title="✨ Создана новая анкета персонажа!",
+            description=result_text,
+            color=discord.Color.purple()
+        )
+        request_info = "Полностью случайный персонаж" if randomize else f"'{params}'"
+        embed.set_footer(text=f"Сгенерировано для: {interaction.user.display_name} | Запрос: {request_info}")
+
+        view = CharacterSheetView(result_text)
+        await interaction.followup.send(embed=embed, view=view)
+
+    except Exception as e:
+        print(f"Произошла ошибка при обработке запроса /generate_character: {e}")
+        await interaction.followup.send(embed=discord.Embed(title="🚫 Ошибка генерации", description="Мастер-создатель не смог выполнить ваш запрос.", color=discord.Color.dark_red()), ephemeral=True)
+
+
 @bot.tree.command(name="ask_lore", description="Задать вопрос по миру, правилам и лору 'Вальдеса'")
 @app_commands.describe(question="Ваш вопрос Хранителю знаний.")
 async def ask_lore(interaction: discord.Interaction, question: str):
@@ -460,6 +547,8 @@ async def help(interaction: discord.Interaction):
     embed = discord.Embed(title="📜 Справка по командам", description="Вот список всех доступных команд и их описание:", color=discord.Color.blue())
     embed.add_field(name="/optimize_post", value="Улучшает ваш РП-пост. Принимает текст, уровень улучшения и опционально изображение.", inline=False)
     embed.add_field(name="/ask_lore", value="Задает вопрос Хранителю знаний по миру 'Вальдеса'. Ответ будет виден всем в канале.", inline=False)
+    # ОБНОВЛЕННАЯ СЕКЦИЯ HELP
+    embed.add_field(name="/generate_character", value="Создает анкету персонажа. Можно задать параметры или сгенерировать полностью случайного.", inline=False)
     embed.add_field(name="/about", value="Показывает информацию о боте и его создателе.", inline=False)
     embed.add_field(name="/help", value="Показывает это справочное сообщение.", inline=False)
     embed.add_field(name="/update_lore", value="**[Только для администраторов]**\nСобирает лор из всех каналов, обновляет файл и перезапускает бота.", inline=False)
