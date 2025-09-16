@@ -45,7 +45,6 @@ gemini_model = genai.GenerativeModel('gemini-1.5-flash')
 VALDES_LORE = ""
 LORE_IMAGES_DIR = "lore_images"
 IMAGE_MAP_FILE = "image_map.json"
-# ⭐ НОВОЕ: Файл для хранения данных о персонажах
 CHARACTER_DATA_FILE = "characters.json"
 CHARACTERS_DATA = {}
 
@@ -60,7 +59,6 @@ def load_lore_from_file():
         print("КРИТИЧЕСКАЯ ОШИБКА: Файл 'file.txt' не найден.")
         VALDES_LORE = "Лор не был загружен из-за отсутствия файла."
 
-# ⭐ НОВЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С ПЕРСОНАЖАМИ
 def load_characters():
     """Загружает данные персонажей из JSON-файла."""
     global CHARACTERS_DATA
@@ -78,7 +76,6 @@ def save_characters():
         json.dump(CHARACTERS_DATA, f, indent=4)
 
 # --- 3. СИСТЕМНЫЕ ПРОМПТЫ ---
-# ⭐ УЛУЧШЕННЫЙ ПРОМПТ
 def get_optimizer_prompt(level, character_info=None):
     """Возвращает системный промпт для оптимизации РП-постов."""
     
@@ -214,7 +211,6 @@ async def on_ready():
     print(f'Бот {bot.user} успешно запущен!')
     load_lore_from_file()
     load_daily_code()
-    # ⭐ НОВОЕ: Загрузка данных персонажей при старте
     load_characters() 
     if not update_code_task.is_running():
         update_code_task.start()
@@ -227,22 +223,14 @@ async def on_ready():
 
 # --- 7. КОМАНДЫ БОТА ---
 
-# НОВАЯ ФУНКЦИЯ-ЧИСТИЛЬЩИК
 def clean_discord_mentions(text: str, guild: discord.Guild) -> str:
     """Заменяет упоминания каналов, ролей и пользователей на их имена."""
     if not text:
         return ""
-
-    # Замена упоминаний каналов: <#123456789> -> #channel-name
     text = re.sub(r'<#(\d+)>', lambda m: f'#{bot.get_channel(int(m.group(1))).name}' if bot.get_channel(int(m.group(1))) else m.group(0), text)
-    
-    # Замена упоминаний ролей: <@&123456789> -> @role-name
     if guild:
         text = re.sub(r'<@&(\d+)>', lambda m: f'@{guild.get_role(int(m.group(1))).name}' if guild.get_role(int(m.group(1))) else m.group(0), text)
-    
-    # Замена упоминаний пользователей: <@123456789> или <@!123456789> -> @username
     text = re.sub(r'<@!?(\d+)>', lambda m: f'@{bot.get_user(int(m.group(1))).display_name}' if bot.get_user(int(m.group(1))) else m.group(0), text)
-    
     return text
 
 @bot.tree.command(name="update_lore", description="[АДМИН] Собирает лор из заданных каналов и обновляет файл.")
@@ -412,19 +400,16 @@ async def optimize_post(interaction: discord.Interaction, post_text: str, optimi
         await interaction.followup.send("❌ **Ошибка:** Прикрепленный файл не является изображением.", ephemeral=True)
         return
 
-    # ⭐ НОВОЕ: Получение данных активного персонажа
     user_id = str(interaction.user.id)
     active_character_info = None
     if user_id in CHARACTERS_DATA and CHARACTERS_DATA[user_id]['active_character']:
         active_char_name = CHARACTERS_DATA[user_id]['active_character']
-        # Находим объект персонажа по имени
         for char in CHARACTERS_DATA[user_id]['characters']:
             if char['name'] == active_char_name:
                 active_character_info = char
                 break
 
     level_map = {"minimal": "Минимальные правки", "standard": "Стандартная оптимизация", "creative": "Максимальная креативность"}
-    # ⭐ Передаем данные персонажа в промпт
     prompt = get_optimizer_prompt(level_map[optimization_level.value], active_character_info)
     
     content_to_send = [prompt, f"\n\nПост игрока:\n---\n{post_text}"]
@@ -519,7 +504,7 @@ async def about(interaction: discord.Interaction):
     embed.set_footer(text=f"Бот запущен на сервере: {interaction.guild.name}")
     await interaction.response.send_message(embed=embed, ephemeral=False)
 
-# --- 8. ⭐ НОВЫЙ БЛОК: УПРАВЛЕНИЕ ПЕРСОНАЖАМИ ---
+# --- 8. ⭐ ОБНОВЛЕННЫЙ БЛОК: УПРАВЛЕНИЕ ПЕРСОНАЖАМИ ---
 character_group = app_commands.Group(name="character", description="Управление вашими персонажами")
 
 async def character_name_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
@@ -534,31 +519,65 @@ async def character_name_autocomplete(interaction: discord.Interaction, current:
     ]
 
 @character_group.command(name="add", description="Добавить нового персонажа в систему.")
-@app_commands.describe(name="Имя вашего персонажа.", description="Краткое описание характера, внешности, манер.", avatar="Изображение вашего персонажа.")
-async def character_add(interaction: discord.Interaction, name: str, description: str, avatar: discord.Attachment):
+@app_commands.describe(
+    name="Имя вашего персонажа.", 
+    avatar="Изображение вашего персонажа.",
+    description="(Опционально) Введите краткое описание здесь.",
+    description_file="(Опционально) Или загрузите биографию в .txt файле."
+)
+async def character_add(interaction: discord.Interaction, name: str, avatar: discord.Attachment, description: str = None, description_file: discord.Attachment = None):
+    # ⭐ --- НАЧАЛО БЛОКА ИЗМЕНЕНИЙ ---
     if not avatar.content_type or not avatar.content_type.startswith('image/'):
         await interaction.response.send_message("❌ Файл для аватара должен быть изображением.", ephemeral=True)
         return
+        
+    # Валидация полей описания
+    if description and description_file:
+        await interaction.response.send_message("❌ **Ошибка:** Пожалуйста, укажите либо текстовое описание, либо прикрепите `.txt` файл, но не оба сразу.", ephemeral=True)
+        return
+    if not description and not description_file:
+        await interaction.response.send_message("❌ **Ошибка:** Вы должны предоставить описание персонажа, либо в виде текста, либо в виде `.txt` файла.", ephemeral=True)
+        return
+        
+    description_text = ""
+    if description:
+        description_text = description
+    
+    elif description_file:
+        if not description_file.filename.lower().endswith('.txt'):
+            await interaction.response.send_message("❌ **Ошибка:** Файл с описанием должен быть в формате `.txt`.", ephemeral=True)
+            return
+        if description_file.size > 20000: # Ограничение в 20 КБ
+             await interaction.response.send_message("❌ **Ошибка:** Файл слишком большой. Максимальный размер - 20 КБ.", ephemeral=True)
+             return
+        
+        try:
+            file_bytes = await description_file.read()
+            description_text = file_bytes.decode('utf-8').strip()
+        except UnicodeDecodeError:
+            await interaction.response.send_message("❌ **Ошибка:** Не удалось прочитать файл. Убедитесь, что он сохранен в кодировке UTF-8.", ephemeral=True)
+            return
+        except Exception as e:
+            await interaction.response.send_message(f"❌ **Ошибка:** Произошла непредвиденная ошибка при чтении файла: {e}", ephemeral=True)
+            return
+    # ⭐ --- КОНЕЦ БЛОКА ИЗМЕНЕНИЙ ---
 
     user_id = str(interaction.user.id)
 
-    # Инициализация пользователя, если его нет
     if user_id not in CHARACTERS_DATA:
         CHARACTERS_DATA[user_id] = {"active_character": None, "characters": []}
 
-    # Проверка на дубликат имени
     if any(char['name'] == name for char in CHARACTERS_DATA[user_id]['characters']):
         await interaction.response.send_message(f"❌ Персонаж с именем '{name}' у вас уже существует.", ephemeral=True)
         return
 
     new_char = {
         "name": name,
-        "description": description,
+        "description": description_text, # ⭐ Используем полученный текст
         "avatar_url": avatar.url
     }
     CHARACTERS_DATA[user_id]['characters'].append(new_char)
     
-    # Если это первый персонаж, делаем его активным
     if not CHARACTERS_DATA[user_id]['active_character']:
         CHARACTERS_DATA[user_id]['active_character'] = name
 
@@ -566,7 +585,8 @@ async def character_add(interaction: discord.Interaction, name: str, description
     
     embed = discord.Embed(title=f"✅ Персонаж '{name}' успешно добавлен!", color=discord.Color.green())
     embed.set_thumbnail(url=avatar.url)
-    embed.add_field(name="Описание", value=description, inline=False)
+    # ⭐ Укорачиваем текст для превью в эмбеде
+    embed.add_field(name="Описание (превью)", value=f"{description_text[:1000]}...", inline=False)
     if CHARACTERS_DATA[user_id]['active_character'] == name:
          embed.set_footer(text="Он автоматически выбран как активный.")
 
@@ -591,10 +611,8 @@ async def character_delete(interaction: discord.Interaction, name: str):
 
     CHARACTERS_DATA[user_id]['characters'].remove(char_to_delete)
     
-    # Если удалили активного персонажа, сбрасываем активного
     if CHARACTERS_DATA[user_id]['active_character'] == name:
         CHARACTERS_DATA[user_id]['active_character'] = None
-        # И если есть другие персонажи, делаем первого из них активным
         if CHARACTERS_DATA[user_id]['characters']:
             CHARACTERS_DATA[user_id]['active_character'] = CHARACTERS_DATA[user_id]['characters'][0]['name']
 
