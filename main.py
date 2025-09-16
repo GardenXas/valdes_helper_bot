@@ -19,7 +19,7 @@ import sys
 import asyncio
 import re
 import shutil
-import aiohttp # <--- ДОБАВЛЕН ИМПОРТ
+import aiohttp
 
 # Загрузка переменных окружения из файла .env
 load_dotenv()
@@ -228,79 +228,95 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     channels_to_parse = [bot.get_channel(cid) for cid in channel_ids if bot.get_channel(cid) is not None]
     sorted_channels = sorted(channels_to_parse, key=lambda c: c.position)
 
-    # --- ИСПРАВЛЕННЫЙ БЛОК СКАНИРОВАНИЯ ---
+    # --- НОВЫЙ, УЛУЧШЕННЫЙ БЛОК СКАНИРОВАНИЯ ---
     async with aiohttp.ClientSession() as session:
+        
+        # Вспомогательная функция для скачивания и регистрации изображения
+        async def download_and_register_image(url, filename_base):
+            nonlocal image_id_counter, image_map, downloaded_images_count
+            try:
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        image_bytes = await resp.read()
+                        image_id = f"IMAGE_{image_id_counter}"
+                        
+                        # Определяем расширение файла
+                        content_type = resp.headers.get('Content-Type', '')
+                        file_extension = 'png' # по умолчанию
+                        if 'jpeg' in content_type or 'jpg' in content_type:
+                            file_extension = 'jpg'
+                        elif 'png' in content_type:
+                            file_extension = 'png'
+                        elif 'gif' in content_type:
+                            file_extension = 'gif'
+                        elif 'webp' in content_type:
+                             file_extension = 'webp'
+                        
+                        new_filename = f"{image_id}.{file_extension}"
+                        save_path = os.path.join(LORE_IMAGES_DIR, new_filename)
+                        
+                        with open(save_path, 'wb') as f:
+                            f.write(image_bytes)
+                        
+                        image_map[image_id] = new_filename
+                        image_id_counter += 1
+                        downloaded_images_count += 1
+                        return f"[{image_id}]"
+                    else:
+                        print(f"Ошибка скачивания {url}: статус {resp.status}")
+                        return None
+            except Exception as e:
+                print(f"Критическая ошибка при скачивании {url}: {e}")
+                return None
+
         for channel in sorted_channels:
             full_lore_text += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
             
             async def parse_message(message):
-                nonlocal full_lore_text, total_messages_count, image_id_counter, image_map, downloaded_images_count
+                nonlocal full_lore_text, total_messages_count
                 
-                block_content = ""
+                content_parts = []
+                
+                # 1. Основной текст сообщения
                 if message.content:
-                    block_content += message.content
-
-                image_tags = []
+                    content_parts.append(message.content.strip())
                 
-                # 1. Обработка эмбедов (текст + изображения)
+                # 2. Обработка эмбедов (встроенных сообщений)
                 if message.embeds:
                     for embed in message.embeds:
-                        if embed.title: block_content += f"\n\n**{embed.title}**\n"
-                        if embed.description: block_content += embed.description + "\n"
-                        for field in embed.fields: block_content += f"**{field.name}**\n{field.value}\n"
+                        embed_text_parts = []
+                        if embed.title:
+                            embed_text_parts.append(f"**{embed.title}**")
+                        if embed.description:
+                            embed_text_parts.append(embed.description)
                         
-                        # Собираем URL изображений из эмбеда
-                        embed_image_urls = []
+                        # Собираем текстовые части в один блок
+                        if embed_text_parts:
+                            content_parts.append("\n".join(embed_text_parts))
+                        
+                        # Изображение, привязанное к основному тексту эмбеда (самое важное)
                         if embed.image and embed.image.url:
-                            embed_image_urls.append(embed.image.url)
-                        if embed.thumbnail and embed.thumbnail.url:
-                            embed_image_urls.append(embed.thumbnail.url)
+                            image_tag = await download_and_register_image(embed.image.url, f"embed_image_{message.id}")
+                            if image_tag:
+                                content_parts.append(image_tag)
 
-                        for url in embed_image_urls:
-                            try:
-                                async with session.get(url) as resp:
-                                    if resp.status == 200:
-                                        image_bytes = await resp.read()
-                                        image_id = f"IMAGE_{image_id_counter}"
-                                        file_extension = url.split('.')[-1].split('?')[0] if '.' in url else 'png'
-                                        if len(file_extension) > 4 or not file_extension: file_extension = 'png'
-                                        new_filename = f"{image_id}.{file_extension}"
-                                        save_path = os.path.join(LORE_IMAGES_DIR, new_filename)
-                                        
-                                        with open(save_path, 'wb') as f:
-                                            f.write(image_bytes)
-
-                                        image_tags.append(f" [IMAGE_{image_id_counter}]")
-                                        image_map[image_id] = new_filename
-                                        image_id_counter += 1
-                                        downloaded_images_count += 1
-                                    else:
-                                        print(f"Не удалось скачать изображение из эмбеда (статус {resp.status}): {url}")
-                            except Exception as e:
-                                print(f"Ошибка при скачивании/сохранении изображения из эмбеда: {e}")
-
-                # 2. Обработка прикрепленных файлов (только изображения)
+                        # Поля (fields) эмбеда
+                        for field in embed.fields:
+                            field_text = f"**{field.name}**\n{field.value}"
+                            content_parts.append(field_text)
+                
+                # 3. Обработка прикрепленных файлов
                 if message.attachments:
                     image_attachments = [att for att in message.attachments if att.content_type and att.content_type.startswith('image/')]
                     for attachment in image_attachments:
-                        image_id = f"IMAGE_{image_id_counter}"
-                        file_extension = attachment.filename.split('.')[-1] if '.' in attachment.filename else 'png'
-                        new_filename = f"{image_id}.{file_extension}"
-                        save_path = os.path.join(LORE_IMAGES_DIR, new_filename)
-                        
-                        try:
-                            await attachment.save(save_path)
-                            image_tags.append(f" [IMAGE_{image_id_counter}]")
-                            image_map[image_id] = new_filename
-                            image_id_counter += 1
-                            downloaded_images_count += 1
-                        except Exception as e:
-                            print(f"Не удалось сохранить прикрепленное изображение {attachment.filename}: {e}")
-
-                # Добавляем в общий файл, только если есть текст или были скачаны изображения
-                if block_content.strip() or image_tags:
-                    final_text = block_content.strip() + "".join(image_tags)
-                    full_lore_text += final_text + "\n\n"
+                        image_tag = await download_and_register_image(attachment.url, attachment.filename)
+                        if image_tag:
+                            content_parts.append(image_tag)
+                
+                # Собираем все части в единый текст для файла
+                if content_parts:
+                    final_text_for_message = "\n\n".join(filter(None, content_parts))
+                    full_lore_text += final_text_for_message + "\n\n"
                     total_messages_count += 1
 
             if isinstance(channel, discord.ForumChannel):
@@ -323,7 +339,7 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
 
             full_lore_text += f"--- КОНЕЦ КАНАЛА: {channel.name} ---\n"
             parsed_channels_count += 1
-    # --- КОНЕЦ ИСПРАВЛЕННОГО БЛОКА ---
+    # --- КОНЕЦ НОВОГО БЛОКА ---
 
     try:
         with open("file.txt", "w", encoding="utf-8") as f:
