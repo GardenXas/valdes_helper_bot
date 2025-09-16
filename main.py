@@ -484,10 +484,20 @@ async def ask_lore(interaction: discord.Interaction, question: str):
         print(f"Произошла ошибка при обработке запроса /ask_lore: {e}")
         await interaction.followup.send(embed=discord.Embed(title="🚫 Ошибка в архиве", description="Хранитель знаний не смог найти ответ.", color=discord.Color.dark_red()), ephemeral=True)
 
+# ⭐ ОБНОВЛЕННАЯ КОМАНДА HELP ⭐
 @bot.tree.command(name="help", description="Показывает информацию обо всех доступных командах.")
 async def help(interaction: discord.Interaction):
     embed = discord.Embed(title="📜 Справка по командам", description="Вот список всех доступных команд и их описание:", color=discord.Color.blue())
-    embed.add_field(name="/character [add/delete/select/view]", value="Управление вашими персонажами для улучшения работы других команд.", inline=False)
+    
+    character_commands_description = (
+        "**`add`**: Создать нового персонажа (имя, аватар, краткое описание).\n"
+        "**`set_bio`**: Загрузить полную биографию из `.txt` файла для персонажа.\n"
+        "**`delete`**: Удалить одного из ваших персонажей.\n"
+        "**`select`**: Выбрать активного персонажа для других команд.\n"
+        "**`view`**: Посмотреть профиль активного персонажа."
+    )
+    embed.add_field(name="/character [подкоманда]", value=character_commands_description, inline=False)
+    
     embed.add_field(name="/optimize_post", value="Улучшает ваш РП-пост. Использует данные активного персонажа для лучшего результата.", inline=False)
     embed.add_field(name="/ask_lore", value="Задает вопрос Хранителю знаний по миру 'Вальдеса'. Ответ будет виден всем в канале.", inline=False)
     embed.add_field(name="/about", value="Показывает информацию о боте и его создателе.", inline=False)
@@ -504,7 +514,7 @@ async def about(interaction: discord.Interaction):
     embed.set_footer(text=f"Бот запущен на сервере: {interaction.guild.name}")
     await interaction.response.send_message(embed=embed, ephemeral=False)
 
-# --- 8. ⭐ ОБНОВЛЕННЫЙ БЛОК: УПРАВЛЕНИЕ ПЕРСОНАЖАМИ ---
+# --- 8. КОМАНДЫ УПРАВЛЕНИЯ ПЕРСОНАЖАМИ ---
 character_group = app_commands.Group(name="character", description="Управление вашими персонажами")
 
 async def character_name_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
@@ -521,46 +531,13 @@ async def character_name_autocomplete(interaction: discord.Interaction, current:
 @character_group.command(name="add", description="Добавить нового персонажа в систему.")
 @app_commands.describe(
     name="Имя вашего персонажа.", 
-    avatar="Изображение вашего персонажа.",
-    description="(Опционально) Введите краткое описание здесь.",
-    description_file="(Опционально) Или загрузите биографию в .txt файле."
+    description="Краткое описание характера, внешности, манер.", 
+    avatar="Изображение вашего персонажа."
 )
-async def character_add(interaction: discord.Interaction, name: str, avatar: discord.Attachment, description: str = None, description_file: discord.Attachment = None):
-    # ⭐ --- НАЧАЛО БЛОКА ИЗМЕНЕНИЙ ---
+async def character_add(interaction: discord.Interaction, name: str, description: str, avatar: discord.Attachment):
     if not avatar.content_type or not avatar.content_type.startswith('image/'):
         await interaction.response.send_message("❌ Файл для аватара должен быть изображением.", ephemeral=True)
         return
-        
-    # Валидация полей описания
-    if description and description_file:
-        await interaction.response.send_message("❌ **Ошибка:** Пожалуйста, укажите либо текстовое описание, либо прикрепите `.txt` файл, но не оба сразу.", ephemeral=True)
-        return
-    if not description and not description_file:
-        await interaction.response.send_message("❌ **Ошибка:** Вы должны предоставить описание персонажа, либо в виде текста, либо в виде `.txt` файла.", ephemeral=True)
-        return
-        
-    description_text = ""
-    if description:
-        description_text = description
-    
-    elif description_file:
-        if not description_file.filename.lower().endswith('.txt'):
-            await interaction.response.send_message("❌ **Ошибка:** Файл с описанием должен быть в формате `.txt`.", ephemeral=True)
-            return
-        if description_file.size > 20000: # Ограничение в 20 КБ
-             await interaction.response.send_message("❌ **Ошибка:** Файл слишком большой. Максимальный размер - 20 КБ.", ephemeral=True)
-             return
-        
-        try:
-            file_bytes = await description_file.read()
-            description_text = file_bytes.decode('utf-8').strip()
-        except UnicodeDecodeError:
-            await interaction.response.send_message("❌ **Ошибка:** Не удалось прочитать файл. Убедитесь, что он сохранен в кодировке UTF-8.", ephemeral=True)
-            return
-        except Exception as e:
-            await interaction.response.send_message(f"❌ **Ошибка:** Произошла непредвиденная ошибка при чтении файла: {e}", ephemeral=True)
-            return
-    # ⭐ --- КОНЕЦ БЛОКА ИЗМЕНЕНИЙ ---
 
     user_id = str(interaction.user.id)
 
@@ -573,7 +550,7 @@ async def character_add(interaction: discord.Interaction, name: str, avatar: dis
 
     new_char = {
         "name": name,
-        "description": description_text, # ⭐ Используем полученный текст
+        "description": description,
         "avatar_url": avatar.url
     }
     CHARACTERS_DATA[user_id]['characters'].append(new_char)
@@ -585,11 +562,48 @@ async def character_add(interaction: discord.Interaction, name: str, avatar: dis
     
     embed = discord.Embed(title=f"✅ Персонаж '{name}' успешно добавлен!", color=discord.Color.green())
     embed.set_thumbnail(url=avatar.url)
-    # ⭐ Укорачиваем текст для превью в эмбеде
-    embed.add_field(name="Описание (превью)", value=f"{description_text[:1000]}...", inline=False)
+    embed.add_field(name="Описание", value=description, inline=False)
     if CHARACTERS_DATA[user_id]['active_character'] == name:
-         embed.set_footer(text="Он автоматически выбран как активный.")
+         embed.set_footer(text="Он автоматически выбран как активный. Вы можете добавить полную биографию через /character set_bio.")
 
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@character_group.command(name="set_bio", description="Загрузить или обновить полную биографию персонажа из .txt файла.")
+@app_commands.describe(
+    name="Имя персонажа, чью биографию вы хотите обновить.",
+    file="Файл .txt с полной биографией."
+)
+@app_commands.autocomplete(name=character_name_autocomplete)
+async def character_set_bio(interaction: discord.Interaction, name: str, file: discord.Attachment):
+    user_id = str(interaction.user.id)
+
+    if user_id not in CHARACTERS_DATA or not any(c['name'] == name for c in CHARACTERS_DATA[user_id]['characters']):
+        await interaction.response.send_message(f"❌ Персонаж с именем '{name}' не найден. Сначала создайте его через `/character add`.", ephemeral=True)
+        return
+        
+    if not file.filename.lower().endswith('.txt'):
+        await interaction.response.send_message("❌ **Ошибка:** Файл должен быть в формате `.txt`.", ephemeral=True)
+        return
+    if file.size > 20000: # Ограничение в 20 КБ
+         await interaction.response.send_message("❌ **Ошибка:** Файл слишком большой. Максимальный размер - 20 КБ.", ephemeral=True)
+         return
+        
+    try:
+        file_bytes = await file.read()
+        description_text = file_bytes.decode('utf-8').strip()
+    except Exception as e:
+        await interaction.response.send_message(f"❌ **Ошибка:** Не удалось прочитать файл. Убедитесь, что он в кодировке UTF-8. ({e})", ephemeral=True)
+        return
+
+    for char in CHARACTERS_DATA[user_id]['characters']:
+        if char['name'] == name:
+            char['description'] = description_text
+            break
+    
+    save_characters()
+    
+    embed = discord.Embed(title=f"✅ Биография персонажа '{name}' обновлена!", color=discord.Color.green())
+    embed.add_field(name="Превью новой биографии", value=f"{description_text[:1000]}...", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
