@@ -138,7 +138,7 @@ def load_daily_code():
                 print(f"Загружен сегодняшний код доступа: {DAILY_ACCESS_CODE}")
                 return
     except (FileNotFoundError, json.JSONDecodeError):
-        pass # Игнорируем ошибки и просто генерируем новый код
+        pass
     
     new_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
     DAILY_ACCESS_CODE = new_code
@@ -193,6 +193,24 @@ async def on_ready():
 
 # --- 7. КОМАНДЫ БОТА ---
 
+# НОВАЯ ФУНКЦИЯ-ЧИСТИЛЬЩИК
+def clean_discord_mentions(text: str, guild: discord.Guild) -> str:
+    """Заменяет упоминания каналов, ролей и пользователей на их имена."""
+    if not text:
+        return ""
+
+    # Замена упоминаний каналов: <#123456789> -> #channel-name
+    text = re.sub(r'<#(\d+)>', lambda m: f'#{bot.get_channel(int(m.group(1))).name}' if bot.get_channel(int(m.group(1))) else m.group(0), text)
+    
+    # Замена упоминаний ролей: <@&123456789> -> @role-name
+    if guild:
+        text = re.sub(r'<@&(\d+)>', lambda m: f'@{guild.get_role(int(m.group(1))).name}' if guild.get_role(int(m.group(1))) else m.group(0), text)
+    
+    # Замена упоминаний пользователей: <@123456789> или <@!123456789> -> @username
+    text = re.sub(r'<@!?(\d+)>', lambda m: f'@{bot.get_user(int(m.group(1))).display_name}' if bot.get_user(int(m.group(1))) else m.group(0), text)
+    
+    return text
+
 @bot.tree.command(name="update_lore", description="[АДМИН] Собирает лор из заданных каналов и обновляет файл.")
 @app_commands.describe(access_code="Ежедневный код доступа для подтверждения")
 async def update_lore(interaction: discord.Interaction, access_code: str):
@@ -228,11 +246,9 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     channels_to_parse = [bot.get_channel(cid) for cid in channel_ids if bot.get_channel(cid) is not None]
     sorted_channels = sorted(channels_to_parse, key=lambda c: c.position)
 
-    # --- НОВЫЙ, УЛУЧШЕННЫЙ БЛОК СКАНИРОВАНИЯ ---
     async with aiohttp.ClientSession() as session:
         
-        # Вспомогательная функция для скачивания и регистрации изображения
-        async def download_and_register_image(url, filename_base):
+        async def download_and_register_image(url):
             nonlocal image_id_counter, image_map, downloaded_images_count
             try:
                 async with session.get(url) as resp:
@@ -240,31 +256,23 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                         image_bytes = await resp.read()
                         image_id = f"IMAGE_{image_id_counter}"
                         
-                        # Определяем расширение файла
                         content_type = resp.headers.get('Content-Type', '')
-                        file_extension = 'png' # по умолчанию
-                        if 'jpeg' in content_type or 'jpg' in content_type:
-                            file_extension = 'jpg'
-                        elif 'png' in content_type:
-                            file_extension = 'png'
-                        elif 'gif' in content_type:
-                            file_extension = 'gif'
-                        elif 'webp' in content_type:
-                             file_extension = 'webp'
+                        file_extension = 'png'
+                        if 'jpeg' in content_type or 'jpg' in content_type: file_extension = 'jpg'
+                        elif 'png' in content_type: file_extension = 'png'
+                        elif 'gif' in content_type: file_extension = 'gif'
+                        elif 'webp' in content_type: file_extension = 'webp'
                         
                         new_filename = f"{image_id}.{file_extension}"
                         save_path = os.path.join(LORE_IMAGES_DIR, new_filename)
                         
-                        with open(save_path, 'wb') as f:
-                            f.write(image_bytes)
+                        with open(save_path, 'wb') as f: f.write(image_bytes)
                         
                         image_map[image_id] = new_filename
                         image_id_counter += 1
                         downloaded_images_count += 1
                         return f"[{image_id}]"
-                    else:
-                        print(f"Ошибка скачивания {url}: статус {resp.status}")
-                        return None
+                    return None
             except Exception as e:
                 print(f"Критическая ошибка при скачивании {url}: {e}")
                 return None
@@ -272,48 +280,44 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
         for channel in sorted_channels:
             full_lore_text += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
             
-            async def parse_message(message):
+            async def parse_message(message, guild):
                 nonlocal full_lore_text, total_messages_count
                 
                 content_parts = []
                 
-                # 1. Основной текст сообщения
+                # 1. Основной текст сообщения (уже очищенный)
                 if message.content:
-                    content_parts.append(message.content.strip())
+                    content_parts.append(clean_discord_mentions(message.content.strip(), guild))
                 
-                # 2. Обработка эмбедов (встроенных сообщений)
+                # 2. Обработка эмбедов
                 if message.embeds:
                     for embed in message.embeds:
                         embed_text_parts = []
                         if embed.title:
-                            embed_text_parts.append(f"**{embed.title}**")
+                            embed_text_parts.append(f"**{clean_discord_mentions(embed.title, guild)}**")
                         if embed.description:
-                            embed_text_parts.append(embed.description)
+                            embed_text_parts.append(clean_discord_mentions(embed.description, guild))
                         
-                        # Собираем текстовые части в один блок
                         if embed_text_parts:
                             content_parts.append("\n".join(embed_text_parts))
                         
-                        # Изображение, привязанное к основному тексту эмбеда (самое важное)
                         if embed.image and embed.image.url:
-                            image_tag = await download_and_register_image(embed.image.url, f"embed_image_{message.id}")
-                            if image_tag:
-                                content_parts.append(image_tag)
+                            image_tag = await download_and_register_image(embed.image.url)
+                            if image_tag: content_parts.append(image_tag)
 
-                        # Поля (fields) эмбеда
                         for field in embed.fields:
-                            field_text = f"**{field.name}**\n{field.value}"
+                            field_name = clean_discord_mentions(field.name, guild)
+                            field_value = clean_discord_mentions(field.value, guild)
+                            field_text = f"**{field_name}**\n{field_value}"
                             content_parts.append(field_text)
                 
                 # 3. Обработка прикрепленных файлов
                 if message.attachments:
                     image_attachments = [att for att in message.attachments if att.content_type and att.content_type.startswith('image/')]
                     for attachment in image_attachments:
-                        image_tag = await download_and_register_image(attachment.url, attachment.filename)
-                        if image_tag:
-                            content_parts.append(image_tag)
+                        image_tag = await download_and_register_image(attachment.url)
+                        if image_tag: content_parts.append(image_tag)
                 
-                # Собираем все части в единый текст для файла
                 if content_parts:
                     final_text_for_message = "\n\n".join(filter(None, content_parts))
                     full_lore_text += final_text_for_message + "\n\n"
@@ -331,15 +335,14 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
                 for thread in sorted_threads:
                     full_lore_text += f"--- Начало публикации: {thread.name} ---\n\n"
                     async for message in thread.history(limit=500, oldest_first=True):
-                        await parse_message(message)
+                        await parse_message(message, interaction.guild) # Передаем guild
                     full_lore_text += f"--- Конец публикации: {thread.name} ---\n\n"
             else:
                 async for message in channel.history(limit=500, oldest_first=True):
-                    await parse_message(message)
+                    await parse_message(message, interaction.guild) # Передаем guild
 
             full_lore_text += f"--- КОНЕЦ КАНАЛА: {channel.name} ---\n"
             parsed_channels_count += 1
-    # --- КОНЕЦ НОВОГО БЛОКА ---
 
     try:
         with open("file.txt", "w", encoding="utf-8") as f:
