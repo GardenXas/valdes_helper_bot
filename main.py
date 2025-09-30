@@ -39,7 +39,7 @@ if not all([DISCORD_TOKEN, GEMINI_API_KEY, MAIN_GUILD_ID, ADMIN_GUILD_ID, CODE_C
 
 # Настройка API Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+gemini_model = genai.GenerativeModel('gemini-2.5-flash')
 
 # --- 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И ФУНКЦИИ ---
 VALDES_LORE = ""
@@ -685,3 +685,4 @@ bot.tree.add_command(character_group)
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
+
