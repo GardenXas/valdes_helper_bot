@@ -32,6 +32,10 @@ CODE_CHANNEL_ID = os.getenv("CODE_CHANNEL_ID")
 OWNER_USER_ID = os.getenv("OWNER_USER_ID")
 LORE_CHANNEL_IDS = os.getenv("LORE_CHANNEL_IDS")
 
+# <<< НОВОЕ ИЗМЕНЕНИЕ: Флаг для определения тестового режима >>>
+# Он считывает переменную из .env. Если ее нет, по умолчанию считается False (основной бот).
+IS_TEST_BOT = os.getenv("IS_TEST_BOT", "False").lower() == "true"
+
 
 # Проверяем, что все ID и ключи на месте
 if not all([DISCORD_TOKEN, GEMINI_API_KEY, MAIN_GUILD_ID, ADMIN_GUILD_ID, CODE_CHANNEL_ID, OWNER_USER_ID, LORE_CHANNEL_IDS]):
@@ -39,7 +43,7 @@ if not all([DISCORD_TOKEN, GEMINI_API_KEY, MAIN_GUILD_ID, ADMIN_GUILD_ID, CODE_C
 
 # Настройка API Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel('gemini-2.5-flash')
+gemini_model = genai.GenerativeModel('gemini-1.5-flash')
 
 # --- 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И ФУНКЦИИ ---
 VALDES_LORE = ""
@@ -92,15 +96,13 @@ def get_optimizer_prompt(level, character_info=None):
 Ты — ассистент для текстового ролевого проекта 'Вальдес'. Твоя задача — идеально отформатировать и, при необходимости, улучшить пост игрока.
 {character_context_prompt}
 **КЛЮЧЕВЫЕ ПРАВИЛА ОФОРМЛЕНИЯ ПОСТА (САМОЕ ВАЖНОЕ):**
-1.  **ДЕЙСТВИЯ:** Заключаются в одинарные звездочки. **КЛЮЧЕВОЕ ПРАВИЛО:** Действия пишутся в безличной форме, начинаясь сразу с глагола. Местоимения "Он" или "Она" в начале строки с действием **ОБЯЗАТЕЛЬНО УДАЛЯЮТСЯ**.
-    *   ПРАВИЛЬНО: `*Поднялся с кровати и подошел к окну.*`
-    *   НЕПРАВИЛЬНО: `*Он поднялся с кровати и подошел к окну.*`
+1.  **ДЕЙСТВИЯ:** Все действия персонажа должны быть заключены в одинарные звездочки. Пример: `*Он поднялся с кровати.*`
 2.  **МЫСЛИ И ЗВУКИ:** Все мысли персонажа, а также напевание, мычание и т.д., должны быть заключены в двойные звездочки. Пример: `**Какой сегодня прекрасный день.**` или `**Ммм-хмм...**`
 3.  **РЕЧЬ:** Вся прямая речь персонажа должна начинаться с дефиса и пробела. Пример: `- Доброе утро.`
 4.  Каждый тип (действие, мысль, речь) **ОБЯЗАН** начинаться с новой строки для читаемости.
 
 **ЗОЛОТЫЕ ПРАВИЛА ОБРАБОТКИ:**
-1.  **КОНВЕРТАЦИЯ ЛИЦА:** Всегда преобразуй повествование от первого лица ("Я делаю") в глагол третьего лица ("делает"). Но помни, что в строках действий (`*...*`) само местоимение "Он/Она" опускается согласно главному правилу выше.
+1.  **ПОВЕСТВОВАНИЕ ОТ ТРЕТЬЕГО ЛИЦА:** Все действия персонажа должны быть написаны от **третьего лица** (Он/Она), даже если игрок написал от первого ('Я делаю').
 2.  **ЗАПРЕТ НА СИМВОЛЫ:** ЗАПРЕЩЕНО использовать любые другие символы для оформления, кроме `* *`, `** **` и `- `. Никаких `()`, `<<>>` и прочего.
 3.  **НЕ БЫТЬ СОАВТОРОМ:** Не добавляй новых действий или мотивации, которых не было в исходном тексте. Ты редактор, а не соавтор.
 """
@@ -210,13 +212,24 @@ async def before_update_code_task():
 
 @bot.event
 async def on_ready():
+    # <<< НОВОЕ ИЗМЕНЕНИЕ: Информационное сообщение о режиме работы >>>
+    if IS_TEST_BOT:
+        print("--- БОТ ЗАПУЩЕН В ТЕСТОВОМ РЕЖИМЕ ---")
+        print("--- Функции обновления лора и отправки кодов доступа ОТКЛЮЧЕНЫ ---")
+    else:
+        print("--- БОТ ЗАПУЩЕН В ПРОИЗВОДСТВЕННОМ РЕЖИМЕ ---")
+
     print(f'Бот {bot.user} успешно запущен!')
     load_lore_from_file()
-    load_daily_code()
-    load_characters() 
-    if not update_code_task.is_running():
-        update_code_task.start()
-    await send_access_code_to_admin_channel(code=DAILY_ACCESS_CODE, title="⚙️ Текущий код доступа (После перезапуска)", description="Бот был перезапущен. Вот актуальный код на сегодня:")
+    load_characters()
+
+    # <<< НОВОЕ ИЗМЕНЕНИЕ: Запускаем административные задачи только для основного бота >>>
+    if not IS_TEST_BOT:
+        load_daily_code()
+        if not update_code_task.is_running():
+            update_code_task.start()
+        await send_access_code_to_admin_channel(code=DAILY_ACCESS_CODE, title="⚙️ Текущий код доступа (После перезапуска)", description="Бот был перезапущен. Вот актуальный код на сегодня:")
+    
     try:
         synced = await bot.tree.sync()
         print(f"Синхронизировано {len(synced)} команд.")
@@ -238,6 +251,11 @@ def clean_discord_mentions(text: str, guild: discord.Guild) -> str:
 @bot.tree.command(name="update_lore", description="[АДМИН] Собирает лор из заданных каналов и обновляет файл.")
 @app_commands.describe(access_code="Ежедневный код доступа для подтверждения")
 async def update_lore(interaction: discord.Interaction, access_code: str):
+    # <<< НОВОЕ ИЗМЕНЕНИЕ: Блокировка команды в тестовом режиме >>>
+    if IS_TEST_BOT:
+        await interaction.response.send_message("❌ **Ошибка:** Эта команда отключена в тестовом режиме.", ephemeral=True)
+        return
+
     if str(interaction.user.id) != OWNER_USER_ID and not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("❌ **Ошибка доступа:** Эту команду могут использовать только администраторы сервера.", ephemeral=True)
         return
@@ -686,6 +704,4 @@ bot.tree.add_command(character_group)
 # --- ЗАПУСК БОТА ---
 if __name__ == "__main__":
     keep_alive()
-    bot.run(DISCORD_TOKEN)
-
-
+    bot.run(DISCORD_TOKEN)```
