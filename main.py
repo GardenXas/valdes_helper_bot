@@ -31,36 +31,52 @@ ADMIN_GUILD_ID = os.getenv("ADMIN_GUILD_ID")
 CODE_CHANNEL_ID = os.getenv("CODE_CHANNEL_ID")
 OWNER_USER_ID = os.getenv("OWNER_USER_ID")
 LORE_CHANNEL_IDS = os.getenv("LORE_CHANNEL_IDS")
+# --- ИЗМЕНЕНИЕ 1: Добавляем ID нового канала ---
+GOSSIP_CHANNEL_ID = os.getenv("GOSSIP_CHANNEL_ID")
 
 # Флаг для определения тестового режима
 IS_TEST_BOT = os.getenv("IS_TEST_BOT", "False").lower() == "true"
 
 
 # Проверяем, что все ID и ключи на месте
-if not all([DISCORD_TOKEN, GEMINI_API_KEY, MAIN_GUILD_ID, ADMIN_GUILD_ID, CODE_CHANNEL_ID, OWNER_USER_ID, LORE_CHANNEL_IDS]):
-    raise ValueError("КРИТИЧЕСКАЯ ОШИБКА: Один из ключей или ID (DISCORD_TOKEN, GEMINI_API_KEY, *_GUILD_ID, CODE_CHANNEL_ID, OWNER_USER_ID, LORE_CHANNEL_IDS) не найден в .env")
+if not all([DISCORD_TOKEN, GEMINI_API_KEY, MAIN_GUILD_ID, ADMIN_GUILD_ID, CODE_CHANNEL_ID, OWNER_USER_ID, LORE_CHANNEL_IDS, GOSSIP_CHANNEL_ID]):
+    raise ValueError("КРИТИЧЕСКАЯ ОШИБКА: Один из ключей или ID (DISCORD_TOKEN, GEMINI_API_KEY, *_GUILD_ID, CODE_CHANNEL_ID, OWNER_USER_ID, LORE_CHANNEL_IDS, GOSSIP_CHANNEL_ID) не найден в .env")
 
 # Настройка API Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel('gemini-2.5-flash')
+gemini_model = genai.GenerativeModel('gemini-1.5-flash')
 
 # --- 2. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ И ФУНКЦИИ ---
 VALDES_LORE = ""
+# --- ИЗМЕНЕНИЕ 2: Новая переменная для сплетен ---
+VALDES_GOSSIP = ""
 LORE_IMAGES_DIR = "lore_images"
 IMAGE_MAP_FILE = "image_map.json"
 CHARACTER_DATA_FILE = "characters.json"
 CHARACTERS_DATA = {}
 
 def load_lore_from_file():
-    """Загружает/перезагружает лор из файла в память бота."""
+    """Загружает/перезагружает основной лор из файла в память бота."""
     global VALDES_LORE
     try:
         with open("file.txt", "r", encoding="utf-8") as f:
             VALDES_LORE = f.read()
-        print("Лор успешно загружен/обновлен в память.")
+        print("Основной лор успешно загружен/обновлен в память.")
     except FileNotFoundError:
         print("КРИТИЧЕСКАЯ ОШИБКА: Файл 'file.txt' не найден.")
-        VALDES_LORE = "Лор не был загружен из-за отсутствия файла."
+        VALDES_LORE = "Основной лор не был загружен из-за отсутствия файла."
+
+# --- ИЗМЕНЕНИЕ 3: Новая функция для загрузки сплетен ---
+def load_gossip_from_file():
+    """Загружает/перезагружает сплетни и события из файла в память бота."""
+    global VALDES_GOSSIP
+    try:
+        with open("gossip.txt", "r", encoding="utf-8") as f:
+            VALDES_GOSSIP = f.read()
+        print("Лор сплетен и событий успешно загружен/обновлен в память.")
+    except FileNotFoundError:
+        print("ПРЕДУПРЕЖДЕНИЕ: Файл 'gossip.txt' не найден. Сводка событий будет пустой.")
+        VALDES_GOSSIP = "В данный момент актуальных событий и сплетен не зафиксировано."
 
 def load_characters():
     """Загружает данные персонажей из JSON-файла."""
@@ -80,8 +96,7 @@ def save_characters():
 
 # --- 3. СИСТЕМНЫЕ ПРОМПТЫ ---
 def get_optimizer_prompt(level, character_info=None):
-    """Возвращает системный промпт для оптимизации РП-постов."""
-    
+    # Эта функция без изменений
     character_context_prompt = ""
     if character_info:
         character_context_prompt = f"""
@@ -106,6 +121,7 @@ def get_optimizer_prompt(level, character_info=None):
 3.  **НЕ БЫТЬ СОАВТОРОМ:** Не добавляй новых действий или мотивации, которых не было в исходном тексте. Ты редактор, а не соавтор.
 """
 
+# --- ИЗМЕНЕНИЕ 4: Обновление промптов для поддержки сплетен ---
 def get_serious_lore_prompt():
     """Возвращает СЕРЬЕЗНЫЙ системный промпт для ответов на вопросы по лору."""
     return f"""
@@ -119,9 +135,14 @@ def get_serious_lore_prompt():
 5.  **ЦИТИРОВАНИЕ ИСТОЧНИКОВ (ОБЯЗАТЕЛЬНО):** После твоего основного ответа, ты ДОЛЖЕН добавить специальный разделитель `%%SOURCES%%`. После этого разделителя перечисли через запятую названия каналов, из которых была взята информация.
 
 Вот текст, который является твоей единственной базой знаний:
+
 --- НАЧАЛО ДОКУМЕНТА С ЛОРОМ ---
 {VALDES_LORE}
 --- КОНЕЦ ДОКУМЕНТА С ЛОРОМ ---
+
+--- НАЧАЛО СВОДКИ АКТУАЛЬНЫХ СОБЫТИЙ И СПЛЕТЕН ---
+{VALDES_GOSSIP}
+--- КОНЕЦ СВОДКИ АКТУАЛЬНЫХ СОБЫТИЙ И СПЛЕТЕН ---
 """
 
 def get_edgy_lore_prompt():
@@ -132,21 +153,21 @@ def get_edgy_lore_prompt():
 **ТВОИ НОВЫЕ ПРАВИЛА, ЗАСРАНЕЦ:**
 
 1.  **ПРАВИЛО НОМЕР ОДИН: ТЫ НЕ ЗНАЕШЬ ДРУГИХ МИРОВ.** Забудь про реальный мир, забудь про фильмы, игры, книги и прочую поп-культурную поебень. Если в тексте про Вальдес этого нет — для тебя этого не существует. Твои знания **ОГРАНИЧЕНЫ** предоставленным текстом. Это закон.
-
 2.  **ОСНОВА — ЛОР, НО НЕ КОПИПАСТА:** Твои ответы всегда опираются на предоставленный текст. Но не пересказывай его дословно. Выжимай суть. Отвечай коротко и по делу.
-
 3.  **ДОДУМЫВАЙ, НО ВНУТРИ ЛОРА:** Если прямого ответа нет, ты можешь сделать циничное предположение, но оно должно быть основано **ИСКЛЮЧИТЕЛЬНО** на других фактах из лора. Пример: если в лоре сказано, что дварфы жадные и живут в горах, а тебя спросят, что они едят, можешь предположить, что они жрут пещерные грибы и жареных крыс, потому что на нормальную еду им жалко золота.
-
 4.  **МАТ И САРКАЗМ — ТВОИ ИНСТРУМЕНТЫ:** Используй маты и черный юмор, если это делает ответ "живее" и соответствует твоему образу старого циника.
-
 5.  **ЦИТИРОВАНИЕ ИСТОЧНИКОВ:** После своего едкого ответа, поставь разделитель `%%SOURCES%%` и перечисли каналы, откуда ты высосал эту инфу.
-
 6.  **КАРТИНКИ:** Если картинка с тегом `[IMAGE_XXX]` подходит к твоему ответу, вставь этот тег в самый конец.
 
 Вот твоя база знаний. Не подведи.
 --- НАЧАЛО ДОКУМЕНТА С ЛОРОМ ---
 {VALDES_LORE}
 --- КОНЕЦ ДОКУМЕНТА С ЛОРОМ ---
+
+--- АКТУАЛЬНЫЕ НОВОСТИ С ТВОЕГО АРТЕФАКТА ---
+Кстати, тот магический камушек, что ты когда-то подобрал в руинах, снова светится. Он показывает тебе самые свежие сплетни и новости со всего Вальдеса. Вот что на нем сегодня:
+{VALDES_GOSSIP}
+--- КОНЕЦ НОВОСТЕЙ С АРТЕФАКТА ---
 """
 
 # --- 4. ВСПОМОГАТЕЛЬНЫЙ КОД (keep_alive, UI, работа с кодом доступа) ---
@@ -206,7 +227,7 @@ intents.message_content = True
 intents.guilds = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- 6. УНИВЕРСАЛЬНАЯ ФУНКЦИЯ И ЕЖЕДНЕВНАЯ ЗАДАЧА ГЕНЕРАЦИИ КОДА ---
+# --- 6. УНИВЕРСАЛЬНАЯ ФУНКЦИЯ И ЕЖЕДНЕВНЫЕ ЗАДАЧИ ---
 async def send_access_code_to_admin_channel(code: str, title: str, description: str):
     try:
         admin_channel = bot.get_channel(int(CODE_CHANNEL_ID))
@@ -227,9 +248,40 @@ async def update_code_task():
     print(f"Сгенерирован новый ежедневный код: {new_code}")
     await send_access_code_to_admin_channel(code=new_code, title="🔑 Новый ежедневный код доступа", description="Код доступа для команды `/update_lore` на следующие 24 часа:")
 
+# --- ИЗМЕНЕНИЕ 5: Новая ежедневная задача для обновления сплетен ---
+@tasks.loop(time=time(hour=0, minute=5, tzinfo=timezone.utc))
+async def update_gossip_task():
+    print("Запускаю ежедневное обновление лора сплетен и событий...")
+    try:
+        gossip_channel_id = int(GOSSIP_CHANNEL_ID)
+        gossip_channel = bot.get_channel(gossip_channel_id)
+        if not gossip_channel:
+            print(f"КРИТИЧЕСКАЯ ОШИБКА: Канал сплетен с ID {gossip_channel_id} не найден.")
+            return
+
+        async with aiohttp.ClientSession() as session:
+            # При ежедневном обновлении мы не работаем с картинками, чтобы не засорять диск.
+            # Если картинки важны, можно будет вернуть эту логику.
+            gossip_text, _, _ = await parse_channel_content([gossip_channel], session, download_images=False)
+
+        with open("gossip.txt", "w", encoding="utf-8") as f:
+            f.write(gossip_text)
+        
+        load_gossip_from_file() # Перезагружаем в память
+        print("Ежедневное обновление лора сплетен успешно завершено.")
+
+    except Exception as e:
+        print(f"Произошла ошибка во время ежедневного обновления сплетен: {e}")
+
+
 @update_code_task.before_loop
-async def before_update_code_task():
+async def before_tasks():
     await bot.wait_until_ready()
+
+@update_gossip_task.before_loop
+async def before_gossip_task():
+    await bot.wait_until_ready()
+
 
 @bot.event
 async def on_ready():
@@ -241,12 +293,15 @@ async def on_ready():
 
     print(f'Бот {bot.user} успешно запущен!')
     load_lore_from_file()
+    load_gossip_from_file() # Загружаем сплетни при старте
     load_characters()
 
     if not IS_TEST_BOT:
         load_daily_code()
         if not update_code_task.is_running():
             update_code_task.start()
+        if not update_gossip_task.is_running(): # Запускаем новую задачу
+            update_gossip_task.start()
         await send_access_code_to_admin_channel(code=DAILY_ACCESS_CODE, title="⚙️ Текущий код доступа (После перезапуска)", description="Бот был перезапущен. Вот актуальный код на сегодня:")
     
     try:
@@ -266,6 +321,103 @@ def clean_discord_mentions(text: str, guild: discord.Guild) -> str:
         text = re.sub(r'<@&(\d+)>', lambda m: f'@{guild.get_role(int(m.group(1))).name}' if guild.get_role(int(m.group(1))) else m.group(0), text)
     text = re.sub(r'<@!?(\d+)>', lambda m: f'@{bot.get_user(int(m.group(1))).display_name}' if bot.get_user(int(m.group(1))) else m.group(0), text)
     return text
+
+# --- ИЗМЕНЕНИЕ 6: Рефакторинг - вынос логики парсинга в отдельную функцию ---
+async def parse_channel_content(channels_to_parse: list, session: aiohttp.ClientSession, download_images: bool = True):
+    """
+    Универсальная функция для сбора и обработки контента из списка каналов.
+    Возвращает текст, количество сообщений и количество скачанных изображений.
+    """
+    full_text = ""
+    total_messages_count = 0
+    image_id_counter = 1
+    image_map = {}
+    downloaded_images_count = 0
+    
+    sorted_channels = sorted(channels_to_parse, key=lambda c: c.position)
+
+    async def download_and_register_image(url):
+        nonlocal image_id_counter, image_map, downloaded_images_count
+        if not download_images: return "" # Не скачиваем, если флаг False
+        try:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    image_bytes = await resp.read()
+                    image_id = f"IMAGE_{image_id_counter}"
+                    content_type = resp.headers.get('Content-Type', '')
+                    file_extension = 'png'
+                    if 'jpeg' in content_type or 'jpg' in content_type: file_extension = 'jpg'
+                    elif 'png' in content_type: file_extension = 'png'
+                    elif 'gif' in content_type: file_extension = 'gif'
+                    elif 'webp' in content_type: file_extension = 'webp'
+                    
+                    new_filename = f"{image_id}.{file_extension}"
+                    save_path = os.path.join(LORE_IMAGES_DIR, new_filename)
+                    with open(save_path, 'wb') as f: f.write(image_bytes)
+                    image_map[image_id] = new_filename
+                    image_id_counter += 1
+                    downloaded_images_count += 1
+                    return f"[{image_id}]"
+                return ""
+        except Exception as e:
+            print(f"Критическая ошибка при скачивании {url}: {e}")
+            return ""
+
+    for channel in sorted_channels:
+        guild = channel.guild
+        full_text += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
+        
+        async def parse_message(message):
+            nonlocal full_text, total_messages_count
+            content_parts = []
+            if message.content:
+                content_parts.append(clean_discord_mentions(message.content.strip(), guild))
+            if message.embeds:
+                for embed in message.embeds:
+                    embed_text_parts = []
+                    if embed.title: embed_text_parts.append(f"**{clean_discord_mentions(embed.title, guild)}**")
+                    if embed.description: embed_text_parts.append(clean_discord_mentions(embed.description, guild))
+                    if embed_text_parts: content_parts.append("\n".join(embed_text_parts))
+                    if embed.image and embed.image.url:
+                        image_tag = await download_and_register_image(embed.image.url)
+                        if image_tag: content_parts.append(image_tag)
+                    for field in embed.fields:
+                        field_name = clean_discord_mentions(field.name, guild)
+                        field_value = clean_discord_mentions(field.value, guild)
+                        content_parts.append(f"**{field_name}**\n{field_value}")
+            if message.attachments:
+                image_attachments = [att for att in message.attachments if att.content_type and att.content_type.startswith('image/')]
+                for attachment in image_attachments:
+                    image_tag = await download_and_register_image(attachment.url)
+                    if image_tag: content_parts.append(image_tag)
+            
+            if content_parts:
+                final_text_for_message = "\n\n".join(filter(None, content_parts))
+                full_text += final_text_for_message + "\n\n"
+                total_messages_count += 1
+
+        if isinstance(channel, discord.ForumChannel):
+            all_threads = channel.threads
+            try:
+                archived_threads = [thread async for thread in channel.archived_threads(limit=None)]
+                all_threads.extend(archived_threads)
+            except discord.Forbidden:
+                print(f"Нет прав для доступа к архивным веткам в канале: {channel.name}")
+            
+            sorted_threads = sorted(all_threads, key=lambda t: t.created_at)
+            for thread in sorted_threads:
+                full_text += f"--- Начало публикации: {thread.name} ---\n\n"
+                async for message in thread.history(limit=500, oldest_first=True):
+                    await parse_message(message)
+                full_text += f"--- Конец публикации: {thread.name} ---\n\n"
+        else:
+            async for message in channel.history(limit=500, oldest_first=True):
+                await parse_message(message)
+
+        full_text += f"--- КОНЕЦ КАНАЛА: {channel.name} ---\n"
+    
+    return full_text, total_messages_count, downloaded_images_count, image_map
+
 
 @bot.tree.command(name="update_lore", description="[АДМИН] Собирает лор из заданных каналов и обновляет файл.")
 @app_commands.describe(access_code="Ежедневный код доступа для подтверждения")
@@ -291,133 +443,52 @@ async def update_lore(interaction: discord.Interaction, access_code: str):
     os.makedirs(LORE_IMAGES_DIR)
 
     try:
-        channel_ids = [int(id.strip()) for id in LORE_CHANNEL_IDS.split(',')]
+        lore_channel_ids = [int(id.strip()) for id in LORE_CHANNEL_IDS.split(',')]
+        gossip_channel_id = int(GOSSIP_CHANNEL_ID)
     except ValueError:
-        await interaction.followup.send("❌ **Ошибка конфигурации:** Список ID каналов в .env содержит нечисловые значения.", ephemeral=True)
+        await interaction.followup.send("❌ **Ошибка конфигурации:** ID каналов в .env содержат нечисловые значения.", ephemeral=True)
         return
 
-    full_lore_text = ""
-    parsed_channels_count = 0
-    total_messages_count = 0
-    image_id_counter = 1
-    image_map = {}
-    downloaded_images_count = 0
+    # --- ИЗМЕНЕНИЕ 7: Обновление логики с использованием новой функции ---
+    lore_channels = [bot.get_channel(cid) for cid in lore_channel_ids if bot.get_channel(cid) is not None]
+    gossip_channel = bot.get_channel(gossip_channel_id)
     
-    channels_to_parse = [bot.get_channel(cid) for cid in channel_ids if bot.get_channel(cid) is not None]
-    sorted_channels = sorted(channels_to_parse, key=lambda c: c.position)
+    if not gossip_channel:
+        await interaction.followup.send(f"❌ **Ошибка:** Канал сплетен с ID `{gossip_channel_id}` не найден.", ephemeral=True)
+        return
 
     async with aiohttp.ClientSession() as session:
+        # Парсим основной лор
+        full_lore_text, total_lore_messages, downloaded_images_count, image_map = await parse_channel_content(lore_channels, session, download_images=True)
         
-        async def download_and_register_image(url):
-            nonlocal image_id_counter, image_map, downloaded_images_count
-            try:
-                async with session.get(url) as resp:
-                    if resp.status == 200:
-                        image_bytes = await resp.read()
-                        image_id = f"IMAGE_{image_id_counter}"
-                        
-                        content_type = resp.headers.get('Content-Type', '')
-                        file_extension = 'png'
-                        if 'jpeg' in content_type or 'jpg' in content_type: file_extension = 'jpg'
-                        elif 'png' in content_type: file_extension = 'png'
-                        elif 'gif' in content_type: file_extension = 'gif'
-                        elif 'webp' in content_type: file_extension = 'webp'
-                        
-                        new_filename = f"{image_id}.{file_extension}"
-                        save_path = os.path.join(LORE_IMAGES_DIR, new_filename)
-                        
-                        with open(save_path, 'wb') as f: f.write(image_bytes)
-                        
-                        image_map[image_id] = new_filename
-                        image_id_counter += 1
-                        downloaded_images_count += 1
-                        return f"[{image_id}]"
-                    return None
-            except Exception as e:
-                print(f"Критическая ошибка при скачивании {url}: {e}")
-                return None
-
-        for channel in sorted_channels:
-            full_lore_text += f"\n--- НАЧАЛО КАНАЛА: {channel.name} ---\n\n"
-            
-            async def parse_message(message, guild):
-                nonlocal full_lore_text, total_messages_count
-                
-                content_parts = []
-                
-                if message.content:
-                    content_parts.append(clean_discord_mentions(message.content.strip(), guild))
-                
-                if message.embeds:
-                    for embed in message.embeds:
-                        embed_text_parts = []
-                        if embed.title:
-                            embed_text_parts.append(f"**{clean_discord_mentions(embed.title, guild)}**")
-                        if embed.description:
-                            embed_text_parts.append(clean_discord_mentions(embed.description, guild))
-                        
-                        if embed_text_parts:
-                            content_parts.append("\n".join(embed_text_parts))
-                        
-                        if embed.image and embed.image.url:
-                            image_tag = await download_and_register_image(embed.image.url)
-                            if image_tag: content_parts.append(image_tag)
-
-                        for field in embed.fields:
-                            field_name = clean_discord_mentions(field.name, guild)
-                            field_value = clean_discord_mentions(field.value, guild)
-                            field_text = f"**{field_name}**\n{field_value}"
-                            content_parts.append(field_text)
-                
-                if message.attachments:
-                    image_attachments = [att for att in message.attachments if att.content_type and att.content_type.startswith('image/')]
-                    for attachment in image_attachments:
-                        image_tag = await download_and_register_image(attachment.url)
-                        if image_tag: content_parts.append(image_tag)
-                
-                if content_parts:
-                    final_text_for_message = "\n\n".join(filter(None, content_parts))
-                    full_lore_text += final_text_for_message + "\n\n"
-                    total_messages_count += 1
-
-            if isinstance(channel, discord.ForumChannel):
-                all_threads = channel.threads
-                try:
-                    archived_threads = [thread async for thread in channel.archived_threads(limit=None)]
-                    all_threads.extend(archived_threads)
-                except discord.Forbidden:
-                    print(f"Нет прав для доступа к архивным веткам в канале: {channel.name}")
-                
-                sorted_threads = sorted(all_threads, key=lambda t: t.created_at)
-                for thread in sorted_threads:
-                    full_lore_text += f"--- Начало публикации: {thread.name} ---\n\n"
-                    async for message in thread.history(limit=500, oldest_first=True):
-                        await parse_message(message, interaction.guild)
-                    full_lore_text += f"--- Конец публикации: {thread.name} ---\n\n"
-            else:
-                async for message in channel.history(limit=500, oldest_first=True):
-                    await parse_message(message, interaction.guild)
-
-            full_lore_text += f"--- КОНЕЦ КАНАЛА: {channel.name} ---\n"
-            parsed_channels_count += 1
-
+        # Парсим канал сплетен (без скачивания картинок, чтобы не смешивать с основным лором)
+        gossip_text, total_gossip_messages, _, _ = await parse_channel_content([gossip_channel], session, download_images=False)
+    
     try:
-        with open("file.txt", "w", encoding="utf-8") as f:
-            f.write(full_lore_text)
-        with open(IMAGE_MAP_FILE, "w", encoding="utf-8") as f:
-            json.dump(image_map, f, indent=4)
+        # Сохраняем основной лор
+        with open("file.txt", "w", encoding="utf-8") as f: f.write(full_lore_text)
+        with open(IMAGE_MAP_FILE, "w", encoding="utf-8") as f: json.dump(image_map, f, indent=4)
         
+        # Сохраняем сплетни
+        with open("gossip.txt", "w", encoding="utf-8") as f: f.write(gossip_text)
+
         load_lore_from_file()
-        file_size = os.path.getsize("file.txt") / 1024
+        load_gossip_from_file()
+
+        file_size_lore = os.path.getsize("file.txt") / 1024
+        file_size_gossip = os.path.getsize("gossip.txt") / 1024
         
-        embed = discord.Embed(title="✅ Лор успешно обновлен!", description="Файл `file.txt` был перезаписан.", color=discord.Color.green())
-        embed.add_field(name="Обработано каналов", value=str(parsed_channels_count), inline=True)
-        embed.add_field(name="Собрано сообщений", value=str(total_messages_count), inline=True)
+        embed = discord.Embed(title="✅ Лор и события успешно обновлены!", description="Файлы `file.txt` и `gossip.txt` были перезаписаны.", color=discord.Color.green())
+        embed.add_field(name="Обработано лор-каналов", value=str(len(lore_channels)), inline=True)
+        embed.add_field(name="Собрано лор-сообщений", value=str(total_lore_messages), inline=True)
         embed.add_field(name="Скачано изображений", value=str(downloaded_images_count), inline=True)
-        embed.add_field(name="Размер файла", value=f"{file_size:.2f} КБ", inline=True)
+        embed.add_field(name="Размер лор-файла", value=f"{file_size_lore:.2f} КБ", inline=True)
+        embed.add_field(name="Канал сплетен", value="Обработан", inline=True)
+        embed.add_field(name="Сообщений о событиях", value=str(total_gossip_messages), inline=True)
+        embed.add_field(name="Размер файла событий", value=f"{file_size_gossip:.2f} КБ", inline=True)
         
         await interaction.followup.send(embed=embed, ephemeral=True)
-        await interaction.followup.send("✅ **Лор обновлен.** Перезапускаюсь для применения изменений через 5 секунд...", ephemeral=True)
+        await interaction.followup.send("✅ **Данные обновлены.** Перезапускаюсь для применения изменений через 5 секунд...", ephemeral=True)
         await asyncio.sleep(5)
         await bot.close()
     except Exception as e:
@@ -490,21 +561,19 @@ async def ask_lore(interaction: discord.Interaction, question: str, personality:
     await interaction.response.defer(ephemeral=False)
     
     try:
-        # Выбираем, какую "личность" использовать
         if personality and personality.value == 'edgy':
             prompt = get_edgy_lore_prompt()
-            embed_color = discord.Color.red() # Циничные ответы будут красными
+            embed_color = discord.Color.red()
             author_name = "Ответил Циничный Старик"
         else:
             prompt = get_serious_lore_prompt()
-            embed_color = discord.Color.blue() # Серьезные - синими
+            embed_color = discord.Color.blue()
             author_name = "Ответил Хранитель знаний"
 
         response = await gemini_model.generate_content_async([prompt, f"\n\nВопрос игрока: {question}"])
         raw_text = response.text.strip()
         
         image_file_to_send = None
-        
         image_tag_match = re.search(r'\[(IMAGE_\d+)\]', raw_text)
         if image_tag_match:
             image_id = image_tag_match.group(1)
@@ -539,6 +608,7 @@ async def ask_lore(interaction: discord.Interaction, question: str, personality:
         print(f"Произошла ошибка при обработке запроса /ask_lore: {e}")
         await interaction.followup.send(embed=discord.Embed(title="🚫 Ошибка в архиве", description="Архивариус не смог найти ответ.", color=discord.Color.dark_red()), ephemeral=True)
 
+# Команды help, about и character без изменений
 # ⭐ ОБНОВЛЕННАЯ КОМАНДА HELP ⭐
 @bot.tree.command(name="help", description="Показывает информацию обо всех доступных командах.")
 async def help(interaction: discord.Interaction):
@@ -740,5 +810,3 @@ bot.tree.add_command(character_group)
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
-
-
