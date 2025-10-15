@@ -558,71 +558,112 @@ async def optimize_post(interaction: discord.Interaction, post_text: str, optimi
     discord.app_commands.Choice(name="Циничный Старик (18+)", value="edgy")
 ])
 async def ask_lore(interaction: discord.Interaction, question: str, personality: discord.app_commands.Choice[str] = None):
-    await interaction.response.defer(ephemeral=False)
+    # Defer теперь должен быть ephemeral, так как основные сообщения будут видимыми
+    await interaction.response.defer(ephemeral=True, thinking=True)
     
     try:
         # Выбираем, какую "личность" использовать
         if personality and personality.value == 'edgy':
             prompt = get_edgy_lore_prompt()
-            embed_color = discord.Color.red() # Циничные ответы будут красными
+            embed_color = discord.Color.red()
             author_name = "Ответил Циничный Старик"
         else:
             prompt = get_serious_lore_prompt()
-            embed_color = discord.Color.blue() # Серьезные - синими
+            embed_color = discord.Color.blue()
             author_name = "Ответил Хранитель знаний"
 
         response = await gemini_model.generate_content_async([prompt, f"\n\nВопрос игрока: {question}"])
         raw_text = response.text.strip()
         
-        # --- ИЗМЕНЕНИЕ НАЧАЛО: Логика для поддержки нескольких изображений ---
+        # --- НАЧАЛО ИЗМЕНЕНИЙ: Логика для создания повествования ---
+
+        # 1. Разбиваем ответ от AI на части по тегам изображений.
+        #    re.split с захватывающей группой (скобки) сохраняет разделители (теги).
+        #    Пример: "Текст1 [IMG1] Текст2" -> ['Текст1 ', '[IMG1]', ' Текст2']
+        parts = re.split(r'(\[IMAGE_\d+\])', raw_text)
+
+        message_blocks = []
+        current_text_accumulator = ""
+
+        for part in parts:
+            # Если часть - это тег изображения
+            if re.match(r'\[IMAGE_\d+\]', part):
+                # Мы нашли тег. Весь накопленный до этого текст относится к нему.
+                # Создаем блок "текст + изображение"
+                message_blocks.append({'text': current_text_accumulator.strip(), 'image_tag': part})
+                current_text_accumulator = "" # Сбрасываем сборщик текста
+            else:
+                # Если это обычный текст, просто добавляем его к сборщику
+                current_text_accumulator += part
         
-        files_to_send = []
-        # Находим ВСЕ совпадения с тегами изображений
-        image_ids = re.findall(r'\[(IMAGE_\d+)\]', raw_text)
+        # Если после последнего изображения остался текст, добавляем его как отдельный блок
+        if current_text_accumulator.strip():
+            message_blocks.append({'text': current_text_accumulator.strip(), 'image_tag': None})
         
-        # Удаляем все теги из текста одним махом
-        if image_ids:
-            raw_text = re.sub(r'\[IMAGE_\d+\]\s*', '', raw_text).strip()
-            
-            try:
-                with open(IMAGE_MAP_FILE, 'r', encoding='utf-8') as f:
-                    image_map = json.load(f)
+        # 2. Обрабатываем и отправляем собранные блоки
+        
+        # Загружаем карту изображений один раз
+        image_map = {}
+        try:
+            with open(IMAGE_MAP_FILE, 'r', encoding='utf-8') as f:
+                image_map = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"ОШИБКА: Не удалось загрузить {IMAGE_MAP_FILE}: {e}")
+
+        is_first_message = True
+        for block in message_blocks:
+            # Пропускаем пустые блоки, если AI случайно сгенерировал тег в самом начале
+            if not block['text'] and not block['image_tag']:
+                continue
+
+            embed = discord.Embed(description=block['text'], color=embed_color)
+            file_to_send = None
+
+            # Если в блоке есть изображение, находим и готовим его
+            if block['image_tag']:
+                image_id = re.search(r'\[(IMAGE_\d+)\]', block['image_tag']).group(1)
+                filename = image_map.get(image_id)
+                if filename:
+                    image_path = os.path.join(LORE_IMAGES_DIR, filename)
+                    if os.path.exists(image_path):
+                        file_to_send = discord.File(image_path, filename="image.png")
+                        embed.set_image(url="attachment://image.png")
+
+            # Стилизуем сообщения для единства
+            if is_first_message:
+                embed.title = "📜 Ответ из архивов Вальдеса"
+                embed.add_field(name="Ваш запрос:", value=question, inline=False)
+                # Разделяем основной ответ и источники
+                answer_text, sources_text = (block['text'].split("%%SOURCES%%") + [""])[:2]
+                embed.description = answer_text.strip()
+                if sources_text.strip():
+                    embed.add_field(name="Источники:", value=sources_text.strip(), inline=False)
                 
-                # Проходим по каждому найденному ID изображения
-                for i, image_id in enumerate(image_ids):
-                    filename = image_map.get(image_id)
-                    if filename:
-                        image_path = os.path.join(LORE_IMAGES_DIR, filename)
-                        if os.path.exists(image_path):
-                            # Добавляем файл в список для отправки
-                            files_to_send.append(discord.File(image_path, filename=f"image_{i}.png"))
+                embed.set_footer(text=f"{author_name} | Запросил: {interaction.user.display_name}")
 
-            except (FileNotFoundError, json.JSONDecodeError) as e:
-                print(f"ОШИБКА: Не удалось загрузить {IMAGE_MAP_FILE}: {e}")
-        
-        # --- ИЗМЕНЕНИЕ КОНЕЦ ---
-
-        answer_text, sources_text = (raw_text.split("%%SOURCES%%") + [""])[:2]
-        answer_text = answer_text.strip()
-        sources_text = sources_text.strip()
-
-        embed = discord.Embed(title="📜 Ответ из архивов Вальдеса", description=answer_text, color=embed_color)
-        embed.add_field(name="Ваш запрос:", value=question, inline=False)
-        if sources_text:
-            embed.add_field(name="Источники:", value=sources_text, inline=False)
+                # Первое сообщение отправляем через followup
+                await interaction.followup.send(embed=embed, file=file_to_send)
+                is_first_message = False
+            else:
+                # Все последующие сообщения — это продолжение. Отправляем их в канал.
+                # Они не содержат заголовка и подвала, чтобы выглядеть как часть одного потока.
+                await interaction.channel.send(embed=embed, file=file_to_send)
             
-        # Если у нас есть файлы, устанавливаем ПЕРВЫЙ из них как главное изображение в embed
-        if files_to_send:
-            embed.set_image(url=f"attachment://{files_to_send[0].filename}")
-            
-        embed.set_footer(text=f"{author_name} | Запросил: {interaction.user.display_name}")
-        
-        # Отправляем embed и СПИСОК файлов. Discord сам разместит их под сообщением.
-        await interaction.followup.send(embed=embed, files=files_to_send)
+            # Небольшая задержка, чтобы сообщения появлялись в правильном порядке
+            await asyncio.sleep(0.5)
+
+        # Отправляем подтверждение пользователю, что все готово
+        await interaction.edit_original_response(content="✅ Ваш ответ был опубликован в канале.")
 
     except Exception as e:
-        print(f"Произошла ошибка при обработке запроса /ask_lore: {e}")
-        await interaction.followup.send(embed=discord.Embed(title="🚫 Ошибка в архиве", description="Архивариус не смог найти ответ.", color=discord.Color.dark_red()), ephemeral=True)
+        print(f"Произошла критическая ошибка при обработке запроса /ask_lore: {e}", file=sys.stderr)
+        error_embed = discord.Embed(title="🚫 Ошибка в архиве", description="Архивариус не смог найти ответ. Попробуйте еще раз.", color=discord.Color.dark_red())
+        # Используем edit_original_response, так как followup уже может быть использован
+        try:
+            await interaction.edit_original_response(content=None, embed=error_embed)
+        except discord.NotFound:
+            # Если по какой-то причине followup не был использован, делаем его
+            await interaction.followup.send(embed=error_embed, ephemeral=True)
 
 # Команды help, about и character без изменений
 # ⭐ ОБНОВЛЕННАЯ КОМАНДА HELP ⭐
@@ -826,5 +867,6 @@ bot.tree.add_command(character_group)
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
+
 
 
