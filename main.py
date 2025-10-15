@@ -117,7 +117,6 @@ def get_optimizer_prompt(level, character_info=None):
 3.  **НЕ БЫТЬ СОАВТОРОМ:** Не добавляй новых действий или мотивации, которых не было в исходном тексте. Ты редактор, а не соавтор.
 """
 
-# --- ИЗМЕНЕНИЕ 1: Обновление промптов для правильной структуры ответа ---
 def get_serious_lore_prompt():
     """Возвращает СЕРЬЕЗНЫЙ системный промпт для ответов на вопросы по лору."""
     return f"""
@@ -544,7 +543,7 @@ async def optimize_post(interaction: discord.Interaction, post_text: str, optimi
         print(f"Произошла внутренняя ошибка в /optimize_post: {e}")
         await interaction.followup.send(embed=discord.Embed(title="🚫 Произошла внутренняя ошибка", description="Не удалось обработать ваш запрос.", color=discord.Color.dark_red()), ephemeral=True)
 
-# --- ИЗМЕНЕНИЕ 2: Полностью переписанная функция ask_lore ---
+# --- ИЗМЕНЕНИЕ: Полностью переработанная функция ask_lore ---
 @bot.tree.command(name="ask_lore", description="Задать вопрос по миру, правилам и лору 'Вальдеса'")
 @app_commands.describe(
     question="Ваш вопрос Хранителю знаний.",
@@ -555,7 +554,8 @@ async def optimize_post(interaction: discord.Interaction, post_text: str, optimi
     discord.app_commands.Choice(name="Циничный Старик (18+)", value="edgy")
 ])
 async def ask_lore(interaction: discord.Interaction, question: str, personality: discord.app_commands.Choice[str] = None):
-    await interaction.response.defer(ephemeral=True, thinking=True)
+    # Ответ должен быть ПУБЛИЧНЫМ. Defer без ephemeral.
+    await interaction.response.defer()
     
     try:
         if personality and personality.value == 'edgy':
@@ -570,24 +570,15 @@ async def ask_lore(interaction: discord.Interaction, question: str, personality:
         response = await gemini_model.generate_content_async([prompt, f"\n\nВопрос игрока: {question}"])
         raw_text = response.text.strip()
         
-        # --- НОВАЯ НАДЕЖНАЯ ЛОГИКА ОБРАБОТКИ ---
-
-        # 1. Сначала извлекаем источники, где бы они ни были, и очищаем основной текст.
+        # 1. Извлекаем источники и очищаем основной текст.
         sources_text = ""
         if "%%SOURCES%%" in raw_text:
-            parts = raw_text.split("%%SOURCES%%")
-            content_before_sources = parts[0]
-            content_after_sources = parts[1] if len(parts) > 1 else ""
-            
-            # Ищем теги изображений, которые ИИ мог по ошибке поставить ПОСЛЕ источников
-            image_tags_after_sources = re.findall(r'(\[IMAGE_\d+\])', content_after_sources)
-            # Переносим эти теги обратно в основной контент
-            raw_text = (content_before_sources + ' '.join(image_tags_after_sources)).strip()
-            
-            # Очищаем текст источников от случайных тегов
-            sources_text = re.sub(r'\[IMAGE_\d+\]', '', content_after_sources).strip()
+            # Разделяем текст на "до" и "после" разделителя
+            main_content, sources_part = raw_text.split("%%SOURCES%%", 1)
+            sources_text = sources_part.strip()
+            raw_text = main_content.strip()
         
-        # 2. Теперь, когда текст чист, разрезаем его на повествовательные блоки.
+        # 2. Разрезаем текст на повествовательные блоки.
         parts = re.split(r'(\[IMAGE_\d+\])', raw_text)
         message_blocks = []
         current_text_accumulator = ""
@@ -611,11 +602,14 @@ async def ask_lore(interaction: discord.Interaction, question: str, personality:
             print(f"ОШИБКА: Не удалось загрузить {IMAGE_MAP_FILE}: {e}")
 
         is_first_message = True
+        footer_text = f"{author_name} | Запросил: {interaction.user.display_name}"
+
         for block in message_blocks:
             if not block['text'] and not block['image_tag']:
                 continue
 
             embed = discord.Embed(description=block['text'], color=embed_color)
+            embed.set_footer(text=footer_text) # <-- КЛЮЧЕВОЕ ИЗМЕНЕНИЕ
             file_to_send = None
 
             if block['image_tag']:
@@ -632,27 +626,26 @@ async def ask_lore(interaction: discord.Interaction, question: str, personality:
                 embed.add_field(name="Ваш запрос:", value=question, inline=False)
                 if sources_text:
                     embed.add_field(name="Источники:", value=sources_text, inline=False)
-                embed.set_footer(text=f"{author_name} | Запросил: {interaction.user.display_name}")
                 
+                # Используем followup для первого сообщения (заменяет "Бот думает...")
                 await interaction.followup.send(embed=embed, file=file_to_send)
                 is_first_message = False
             else:
+                # Последующие сообщения отправляются в канал напрямую
                 await interaction.channel.send(embed=embed, file=file_to_send)
             
             await asyncio.sleep(0.5)
 
-        if is_first_message: # Если цикл не выполнился (пустой ответ)
+        if is_first_message:
+             # Если цикл не выполнился ни разу (пустой ответ), отправляем ephemeral ответ
              await interaction.followup.send("Архивариус не смог найти что-либо по вашему запросу.", ephemeral=True)
-        else:
-            await interaction.edit_original_response(content="✅ Ваш ответ был опубликован в канале.")
 
     except Exception as e:
         print(f"Произошла критическая ошибка при обработке запроса /ask_lore: {e}", file=sys.stderr)
         error_embed = discord.Embed(title="🚫 Ошибка в архиве", description="Архивариус не смог найти ответ. Попробуйте еще раз.", color=discord.Color.dark_red())
-        try:
-            await interaction.edit_original_response(content=None, embed=error_embed, view=None)
-        except discord.NotFound:
-            await interaction.followup.send(embed=error_embed, ephemeral=True)
+        # Отправляем ошибку видимоЙ только пользователю
+        await interaction.followup.send(embed=error_embed, ephemeral=True)
+
 
 @bot.tree.command(name="help", description="Показывает информацию обо всех доступных командах.")
 async def help(interaction: discord.Interaction):
@@ -854,4 +847,3 @@ bot.tree.add_command(character_group)
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
-
