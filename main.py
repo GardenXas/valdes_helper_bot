@@ -158,7 +158,7 @@ def get_edgy_lore_prompt():
 **ТВОИ НОВЫЕ ПРАВИЛА, ЗАСРАНЕЦ:**
 1.  **НЕ ВЫДУМЫВАЙ:** Не знаешь ответа — так и скажи. Нехер врать.
 2.  **МАТ И САРКАЗМ:** Твои лучшие друзья.
-3.  **ДОДУМЫВАЙ ВНУТРИ ЛОРА:** Если прямого ответа нет, можешь сделать циничное предположение, основанное на других фактах из лора.
+3.  **ДОДУМЫВАЙ ВНУТРИ ЛОРА:** Если прямого ответа нет, ты можешь сделать циничное предположение, основанное на других фактах из лора.
 
 **КАК СТРОИТЬ ОТВЕТ (СЛУШАЙ ВНИМАТЕЛЬНО!):**
 1.  **КАРТИНКА ПОСЛЕ ТЕКСТА:** Если хочешь показать картинку, ставь ее тег `[IMAGE_XXX]` СРАЗУ ПОСЛЕ текста, который она, по-твоему, иллюстрирует.
@@ -543,7 +543,7 @@ async def optimize_post(interaction: discord.Interaction, post_text: str, optimi
         print(f"Произошла внутренняя ошибка в /optimize_post: {e}")
         await interaction.followup.send(embed=discord.Embed(title="🚫 Произошла внутренняя ошибка", description="Не удалось обработать ваш запрос.", color=discord.Color.dark_red()), ephemeral=True)
 
-# --- ИЗМЕНЕНИЕ: Полностью переработанная функция ask_lore ---
+# --- ИЗМЕНЕНИЕ: Полностью переработанная функция ask_lore с защитой от сбоев ---
 @bot.tree.command(name="ask_lore", description="Задать вопрос по миру, правилам и лору 'Вальдеса'")
 @app_commands.describe(
     question="Ваш вопрос Хранителю знаний.",
@@ -568,12 +568,27 @@ async def ask_lore(interaction: discord.Interaction, question: str, personality:
             author_name = "Ответил Хранитель знаний"
 
         response = await gemini_model.generate_content_async([prompt, f"\n\nВопрос игрока: {question}"])
-        raw_text = response.text.strip()
         
+        # --- НОВАЯ ЗАЩИТА ОТ СБОЕВ ---
+        raw_text = ""
+        try:
+            raw_text = response.text.strip()
+        except Exception:
+            # Эта ошибка возникает, если ответ заблокирован фильтрами
+            block_reason = response.prompt_feedback.block_reason.name if response.prompt_feedback else "НЕИЗВЕСТНО"
+            error_embed = discord.Embed(
+                title="🚫 Ответ заблокирован",
+                description=f"Архивариус не может предоставить ответ. Система безопасности заблокировала его по причине: **{block_reason}**.\n\n"
+                            "Это могло произойти из-за неоднозначных формулировок в вашем вопросе или в тексте лора, который был проанализирован.",
+                color=discord.Color.dark_red()
+            )
+            await interaction.followup.send(embed=error_embed, ephemeral=True)
+            return # Прекращаем выполнение команды
+        # --- КОНЕЦ ЗАЩИТЫ ---
+
         # 1. Извлекаем источники и очищаем основной текст.
         sources_text = ""
         if "%%SOURCES%%" in raw_text:
-            # Разделяем текст на "до" и "после" разделителя
             main_content, sources_part = raw_text.split("%%SOURCES%%", 1)
             sources_text = sources_part.strip()
             raw_text = main_content.strip()
@@ -609,7 +624,7 @@ async def ask_lore(interaction: discord.Interaction, question: str, personality:
                 continue
 
             embed = discord.Embed(description=block['text'], color=embed_color)
-            embed.set_footer(text=footer_text) # <-- КЛЮЧЕВОЕ ИЗМЕНЕНИЕ
+            embed.set_footer(text=footer_text)
             file_to_send = None
 
             if block['image_tag']:
@@ -627,24 +642,23 @@ async def ask_lore(interaction: discord.Interaction, question: str, personality:
                 if sources_text:
                     embed.add_field(name="Источники:", value=sources_text, inline=False)
                 
-                # Используем followup для первого сообщения (заменяет "Бот думает...")
                 await interaction.followup.send(embed=embed, file=file_to_send)
                 is_first_message = False
             else:
-                # Последующие сообщения отправляются в канал напрямую
                 await interaction.channel.send(embed=embed, file=file_to_send)
             
             await asyncio.sleep(0.5)
 
         if is_first_message:
-             # Если цикл не выполнился ни разу (пустой ответ), отправляем ephemeral ответ
              await interaction.followup.send("Архивариус не смог найти что-либо по вашему запросу.", ephemeral=True)
 
     except Exception as e:
         print(f"Произошла критическая ошибка при обработке запроса /ask_lore: {e}", file=sys.stderr)
-        error_embed = discord.Embed(title="🚫 Ошибка в архиве", description="Архивариус не смог найти ответ. Попробуйте еще раз.", color=discord.Color.dark_red())
-        # Отправляем ошибку видимоЙ только пользователю
-        await interaction.followup.send(embed=error_embed, ephemeral=True)
+        error_embed = discord.Embed(title="🚫 Внутренняя ошибка", description="Произошла непредвиденная ошибка при обработке вашего запроса.", color=discord.Color.dark_red())
+        if not interaction.response.is_done():
+            await interaction.response.send_message(embed=error_embed, ephemeral=True)
+        else:
+            await interaction.followup.send(embed=error_embed, ephemeral=True)
 
 
 @bot.tree.command(name="help", description="Показывает информацию обо всех доступных командах.")
