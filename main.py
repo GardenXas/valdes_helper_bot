@@ -561,34 +561,46 @@ async def ask_lore(interaction: discord.Interaction, question: str, personality:
     await interaction.response.defer(ephemeral=False)
     
     try:
+        # Выбираем, какую "личность" использовать
         if personality and personality.value == 'edgy':
             prompt = get_edgy_lore_prompt()
-            embed_color = discord.Color.red()
+            embed_color = discord.Color.red() # Циничные ответы будут красными
             author_name = "Ответил Циничный Старик"
         else:
             prompt = get_serious_lore_prompt()
-            embed_color = discord.Color.blue()
+            embed_color = discord.Color.blue() # Серьезные - синими
             author_name = "Ответил Хранитель знаний"
 
         response = await gemini_model.generate_content_async([prompt, f"\n\nВопрос игрока: {question}"])
         raw_text = response.text.strip()
         
-        image_file_to_send = None
-        image_tag_match = re.search(r'\[(IMAGE_\d+)\]', raw_text)
-        if image_tag_match:
-            image_id = image_tag_match.group(1)
-            raw_text = raw_text.replace(image_tag_match.group(0), "").strip()
+        # --- ИЗМЕНЕНИЕ НАЧАЛО: Логика для поддержки нескольких изображений ---
+        
+        files_to_send = []
+        # Находим ВСЕ совпадения с тегами изображений
+        image_ids = re.findall(r'\[(IMAGE_\d+)\]', raw_text)
+        
+        # Удаляем все теги из текста одним махом
+        if image_ids:
+            raw_text = re.sub(r'\[IMAGE_\d+\]\s*', '', raw_text).strip()
             
             try:
                 with open(IMAGE_MAP_FILE, 'r', encoding='utf-8') as f:
                     image_map = json.load(f)
-                filename = image_map.get(image_id)
-                if filename:
-                    image_path = os.path.join(LORE_IMAGES_DIR, filename)
-                    if os.path.exists(image_path):
-                        image_file_to_send = discord.File(image_path, filename="image.png")
+                
+                # Проходим по каждому найденному ID изображения
+                for i, image_id in enumerate(image_ids):
+                    filename = image_map.get(image_id)
+                    if filename:
+                        image_path = os.path.join(LORE_IMAGES_DIR, filename)
+                        if os.path.exists(image_path):
+                            # Добавляем файл в список для отправки
+                            files_to_send.append(discord.File(image_path, filename=f"image_{i}.png"))
+
             except (FileNotFoundError, json.JSONDecodeError) as e:
                 print(f"ОШИБКА: Не удалось загрузить {IMAGE_MAP_FILE}: {e}")
+        
+        # --- ИЗМЕНЕНИЕ КОНЕЦ ---
 
         answer_text, sources_text = (raw_text.split("%%SOURCES%%") + [""])[:2]
         answer_text = answer_text.strip()
@@ -598,12 +610,16 @@ async def ask_lore(interaction: discord.Interaction, question: str, personality:
         embed.add_field(name="Ваш запрос:", value=question, inline=False)
         if sources_text:
             embed.add_field(name="Источники:", value=sources_text, inline=False)
-        if image_file_to_send:
-            embed.set_image(url="attachment://image.png")
+            
+        # Если у нас есть файлы, устанавливаем ПЕРВЫЙ из них как главное изображение в embed
+        if files_to_send:
+            embed.set_image(url=f"attachment://{files_to_send[0].filename}")
             
         embed.set_footer(text=f"{author_name} | Запросил: {interaction.user.display_name}")
         
-        await interaction.followup.send(embed=embed, file=image_file_to_send if image_file_to_send else discord.utils.MISSING)
+        # Отправляем embed и СПИСОК файлов. Discord сам разместит их под сообщением.
+        await interaction.followup.send(embed=embed, files=files_to_send)
+
     except Exception as e:
         print(f"Произошла ошибка при обработке запроса /ask_lore: {e}")
         await interaction.followup.send(embed=discord.Embed(title="🚫 Ошибка в архиве", description="Архивариус не смог найти ответ.", color=discord.Color.dark_red()), ephemeral=True)
@@ -810,4 +826,5 @@ bot.tree.add_command(character_group)
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
+
 
