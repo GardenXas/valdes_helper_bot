@@ -49,17 +49,16 @@ LORE_IMAGES_DIR = "lore_images"
 IMAGE_MAP_FILE = "image_map.json"
 CHARACTER_DATA_FILE = "characters.json"
 CHARACTERS_DATA = {}
-GENERATED_FILES_SESSION = [] # Временное хранилище для сгенерированных файлов
+GENERATED_FILES_SESSION = []
 
-# --- 3. ИНСТРУМЕНТЫ ДЛЯ GEMINI ---
+# --- 3. ИНСТРУМЕНТЫ ДЛЯ GEMINI (С ИСПРАВЛЕННОЙ ЛОГИКОЙ ASYNCIO) ---
 
-async def generate_pollinations_image(session: aiohttp.ClientSession, description_prompt: str) -> bytes | None:
-    """Вспомогательная функция для запроса к Pollinations.ai"""
+async def generate_pollinations_image_async(session: aiohttp.ClientSession, description_prompt: str) -> bytes | None:
+    """Асинхронная вспомогательная функция для запроса к Pollinations.ai"""
     try:
         full_prompt = f"ancient scroll, old paper texture, ink drawing, colorless, sketch style, black and white, masterpiece, depicting {description_prompt}"
         encoded_prompt = urllib.parse.quote_plus(full_prompt)
         url = f"https://pollinations.ai/p/{encoded_prompt}?width=1024&height=768&seed={random.randint(1, 100000)}&model=flux"
-        
         async with session.get(url, timeout=120) as resp:
             if resp.status == 200:
                 return await resp.read()
@@ -71,17 +70,15 @@ async def generate_pollinations_image(session: aiohttp.ClientSession, descriptio
 
 def generate_image(description_prompt: str):
     """
-    Инструмент для Gemini. Генерирует изображение по описанию события.
-    Используй этот инструмент, чтобы визуально проиллюстрировать новость или событие из мира Вальдеса.
+    Синхронная обертка для Gemini. Безопасно запускает асинхронный код
+    в существующем цикле событий бота.
     """
     global GENERATED_FILES_SESSION
     print(f"  [Инструмент] Получен вызов generate_image с промптом: '{description_prompt}'")
-    
-    # Поскольку сама функция инструмента не может быть async, мы запускаем
-    # асинхронный код внутри нее через asyncio.
+
     async def run_async_generation():
         async with aiohttp.ClientSession() as session:
-            image_bytes = await generate_pollinations_image(session, description_prompt)
+            image_bytes = await generate_pollinations_image_async(session, description_prompt)
             if image_bytes:
                 file = discord.File(io.BytesIO(image_bytes), filename=f"event_illustration_{random.randint(1,999)}.png")
                 GENERATED_FILES_SESSION.append(file)
@@ -91,24 +88,25 @@ def generate_image(description_prompt: str):
                 print("  [Инструмент] Ошибка: Не удалось сгенерировать изображение.")
                 return {"status": "error", "message": "Не удалось сгенерировать изображение."}
 
-    # Запускаем и ждем завершения асинхронной операции
-    return asyncio.run(run_async_generation())
+    # ПРАВИЛЬНЫЙ СПОСОБ вызова async из sync в работающем приложении
+    try:
+        loop = asyncio.get_running_loop()
+        future = asyncio.run_coroutine_threadsafe(run_async_generation(), loop)
+        return future.result() # Ожидаем завершения в потокобезопасном режиме
+    except RuntimeError:
+        # На случай, если цикл еще не запущен (маловероятно, но безопасно)
+        return asyncio.run(run_async_generation())
 
-# --- ИСПРАВЛЕННАЯ И НАДЕЖНАЯ ИНИЦИАЛИЗАЦИЯ МОДЕЛЕЙ ---
+
+# --- Инициализация моделей Gemini ---
 safety_settings = {
     genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
     genai.types.HarmCategory.HARM_CATEGORY_HATE_SPEECH: genai.types.HarmBlockThreshold.BLOCK_NONE,
     genai.types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: genai.types.HarmBlockThreshold.BLOCK_NONE,
     genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
 }
-
-# 1. Модель с инструментами для команды /ask_lore
-# Мы просто передаем саму функцию - это простой и надежный способ.
 lore_model = genai.GenerativeModel('gemini-2.5-flash', tools=[generate_image], safety_settings=safety_settings)
-
-# 2. Простая модель для команд, не требующих инструментов
 simple_model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety_settings)
-
 
 # --- 4. ФУНКЦИИ-ЗАГРУЗЧИКИ ДАННЫХ ---
 def load_lore_from_file():
@@ -138,9 +136,7 @@ def load_characters():
 def save_characters():
     with open(CHARACTER_DATA_FILE, 'w', encoding='utf-8') as f: json.dump(CHARACTERS_DATA, f, indent=4)
 
-
 # --- 5. СИСТЕМНЫЕ ПРОМПТЫ ---
-# (Промпты остались те же, но теперь они будут работать с правильно определенным инструментом)
 def get_optimizer_prompt(character_info=None):
     character_context_prompt = ""
     if character_info:
@@ -246,7 +242,6 @@ async def on_ready():
 
 # --- 8. ОСНОВНЫЕ КОМАНДЫ БОТА ---
 def clean_discord_mentions(text: str, guild: discord.Guild) -> str:
-    # (код без изменений)
     if not text: return ""
     text = re.sub(r'<#(\d+)>', lambda m: f'#{bot.get_channel(int(m.group(1))).name}' if bot.get_channel(int(m.group(1))) else m.group(0), text)
     if guild: text = re.sub(r'<@&(\d+)>', lambda m: f'@{guild.get_role(int(m.group(1))).name}' if guild.get_role(int(m.group(1))) else m.group(0), text)
@@ -254,12 +249,7 @@ def clean_discord_mentions(text: str, guild: discord.Guild) -> str:
     return text
 
 async def parse_channel_content(channels_to_parse: list, session: aiohttp.ClientSession, download_images: bool = True):
-    # (код без изменений)
-    full_text = ""
-    total_messages_count = 0
-    image_id_counter = 1
-    image_map = {}
-    downloaded_images_count = 0
+    full_text, total_messages_count, image_id_counter, image_map, downloaded_images_count = "", 0, 1, {}, 0
     sorted_channels = sorted(channels_to_parse, key=lambda c: c.position)
     async def download_and_register_image(url):
         nonlocal image_id_counter, image_map, downloaded_images_count
@@ -267,8 +257,7 @@ async def parse_channel_content(channels_to_parse: list, session: aiohttp.Client
         try:
             async with session.get(url) as resp:
                 if resp.status == 200:
-                    image_bytes = await resp.read(); image_id = f"IMAGE_{image_id_counter}"
-                    content_type = resp.headers.get('Content-Type', ''); file_extension = 'png'
+                    image_bytes = await resp.read(); image_id = f"IMAGE_{image_id_counter}"; content_type = resp.headers.get('Content-Type', ''); file_extension = 'png'
                     if 'jpeg' in content_type or 'jpg' in content_type: file_extension = 'jpg'
                     elif 'png' in content_type: file_extension = 'png'
                     elif 'gif' in content_type: file_extension = 'gif'
@@ -294,18 +283,15 @@ async def parse_channel_content(channels_to_parse: list, session: aiohttp.Client
                     if embed.image and embed.image.url:
                         image_tag = await download_and_register_image(embed.image.url)
                         if image_tag: content_parts.append(image_tag)
-                    for field in embed.fields:
-                        content_parts.append(f"**{clean_discord_mentions(field.name, guild)}**\n{clean_discord_mentions(field.value, guild)}")
+                    for field in embed.fields: content_parts.append(f"**{clean_discord_mentions(field.name, guild)}**\n{clean_discord_mentions(field.value, guild)}")
             if message.attachments:
                 for attachment in [att for att in message.attachments if att.content_type and att.content_type.startswith('image/')]:
                     image_tag = await download_and_register_image(attachment.url)
                     if image_tag: content_parts.append(image_tag)
-            if content_parts:
-                full_text += "\n\n".join(filter(None, content_parts)) + "\n\n"; total_messages_count += 1
+            if content_parts: full_text += "\n\n".join(filter(None, content_parts)) + "\n\n"; total_messages_count += 1
         if isinstance(channel, discord.ForumChannel):
             all_threads = channel.threads
-            try:
-                all_threads.extend([thread async for thread in channel.archived_threads(limit=None)])
+            try: all_threads.extend([thread async for thread in channel.archived_threads(limit=None)])
             except discord.Forbidden: print(f"Нет прав на архивные ветки в: {channel.name}")
             for thread in sorted(all_threads, key=lambda t: t.created_at):
                 full_text += f"--- Публикация: {thread.name} ---\n\n"
@@ -391,7 +377,6 @@ async def optimize_post(interaction: discord.Interaction, post_text: str, image:
     except Exception as e:
         print(f"Ошибка в /optimize_post: {e}"); await interaction.followup.send("🚫 Произошла внутренняя ошибка.", color=discord.Color.dark_red(), ephemeral=True)
 
-# --- ГЛАВНАЯ КОМАНДА ЛОРА С ИСПРАВЛЕННОЙ ЛОГИКОЙ ---
 @bot.tree.command(name="ask_lore", description="Задать вопрос по миру, правилам и лору 'Вальдеса'")
 @app_commands.describe(question="Ваш вопрос Хранителю знаний.", personality="Выберите характер ответа.")
 @app_commands.choices(personality=[
@@ -410,20 +395,23 @@ async def ask_lore(interaction: discord.Interaction, question: str, personality:
         else:
             prompt = get_serious_lore_prompt(); embed_color = discord.Color.blue(); author_name = "Ответил Хранитель знаний"
         
-        print("Генерирую ответ и проверяю необходимость вызова инструментов...")
-        # Используем generate_content, а не start_chat, для более простого цикла
-        response = await lore_model.generate_content_async(
-            f"{prompt}\n\nВопрос игрока: {question}",
-            generation_config=genai.types.GenerationConfig() # Обеспечиваем наличие candidates
-        )
+        print("Начинаю сессию с Gemini и отправляю первичный запрос...")
+        chat_session = lore_model.start_chat()
+        response = await chat_session.send_message_async(f"{prompt}\n\nВопрос игрока: {question}")
 
-        if not response.candidates:
-            block_reason = response.prompt_feedback.block_reason.name if response.prompt_feedback else "Неизвестно"
-            print(f"КРИТИКА: Запрос заблокирован системой безопасности. Причина: {block_reason}")
-            await interaction.followup.send(f"🚫 **Ошибка:** Ваш запрос был заблокирован. Причина: `{block_reason}`. Попробуйте переформулировать.", ephemeral=True)
-            return
+        while True:
+            if response.candidates and response.candidates[0].content.parts and response.candidates[0].content.parts[0].function_call:
+                function_call = response.candidates[0].content.parts[0].function_call
+                if function_call.name == "generate_image":
+                    args = {key: value for key, value in function_call.args.items()}
+                    function_response = generate_image(**args)
+                    print("Инструмент отработал. Отправляю результат обратно в Gemini...")
+                    response = await chat_session.send_message_async(genai.Part.from_function_response(name="generate_image", response=function_response))
+                else:
+                    print(f"ОШИБКА: Gemini запросил неизвестный инструмент '{function_call.name}'"); break
+            else:
+                print("Вызовов инструментов больше нет. Получен финальный текстовый ответ."); break
 
-        print("Все инструменты отработали. Получен финальный текстовый ответ.")
         raw_text = response.text.strip()
         answer_text, sources_text = (raw_text.split("%%SOURCES%%") + [""])[:2]
         answer_text = answer_text.strip(); sources_text = sources_text.strip()
@@ -442,17 +430,14 @@ async def ask_lore(interaction: discord.Interaction, question: str, personality:
             await interaction.followup.send(embed=gossip_embed, files=GENERATED_FILES_SESSION)
         
         print("Обработка /ask_lore завершена.\n")
-
     except Exception as e:
         print(f"КРИТИЧЕСКАЯ НЕПРЕДВИДЕННАЯ ОШИБКА в /ask_lore:")
-        traceback.print_exc() # Выводим полную информацию об ошибке в консоль
+        traceback.print_exc()
         await interaction.followup.send("🚫 Ошибка в архиве. Архивариус не смог найти ответ или его артефакт дал сбой. **Подробности записаны в лог консоли.**", ephemeral=True)
     finally:
         GENERATED_FILES_SESSION.clear()
 
-
 @bot.tree.command(name="help", description="Показывает информацию обо всех доступных командах.")
-# ... (код без изменений) ...
 async def help(interaction: discord.Interaction):
     embed = discord.Embed(title="📜 Справка по командам", color=discord.Color.blue())
     embed.add_field(name="/character [add|set_bio|delete|select|view]", value="Полный набор команд для управления вашими персонажами.", inline=False)
@@ -463,7 +448,6 @@ async def help(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="about", description="Показывает информацию о боте.")
-# ... (код без изменений) ...
 async def about(interaction: discord.Interaction):
     embed = discord.Embed(title="О боте 'Хранитель Вальдеса'", color=discord.Color.gold())
     embed.add_field(name="Разработчик", value="**GX**", inline=True)
@@ -472,7 +456,7 @@ async def about(interaction: discord.Interaction):
 
 # --- 9. КОМАНДЫ УПРАВЛЕНИЯ ПЕРСОНАЖАМИ ---
 character_group = app_commands.Group(name="character", description="Управление вашими персонажами")
-# ... (весь блок команд character без изменений) ...
+
 async def character_name_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
     user_id = str(interaction.user.id)
     if user_id not in CHARACTERS_DATA: return []
