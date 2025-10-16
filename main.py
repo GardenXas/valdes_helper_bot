@@ -99,8 +99,8 @@ safety_settings = {
     genai.types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: genai.types.HarmBlockThreshold.BLOCK_NONE,
     genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
 }
-lore_model = genai.GenerativeModel('gemini-1.5-flash', tools=[generate_image], safety_settings=safety_settings)
-simple_model = genai.GenerativeModel('gemini-1.5-flash', safety_settings=safety_settings)
+lore_model = genai.GenerativeModel('gemini-2.5-flash', tools=[generate_image], safety_settings=safety_settings)
+simple_model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety_settings)
 
 # --- 4. ФУНКЦИИ-ЗАГРУЗЧИКИ ДАННЫХ ---
 def load_lore_from_file():
@@ -530,4 +530,4 @@ bot.tree.add_command(character_group)
 # --- 10. ЗАПУСК БОТА ---
 if __name__ == "__main__":
     keep_alive()
-    bot.run(DISCORD_TOKEN)```
+    bot.run(DISCORD_TOKEN)
