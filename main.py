@@ -72,15 +72,12 @@ async def generate_pollinations_image_async(description_prompt: str) -> bytes | 
 
 def generate_image(description_prompt: str):
     """
-    Синхронная обертка для Gemini. Gemini вызывает эту функцию в отдельном потоке.
-    Эта функция создает новый цикл asyncio для выполнения асинхронного кода,
-    не блокируя основной цикл бота.
+    Синхронная обертка для Gemini. Запускает асинхронный код в новом цикле
+    в фоновом потоке, не блокируя основной цикл бота.
     """
     global GENERATED_FILES_SESSION
     print(f"  [Инструмент] Получен вызов generate_image с промптом: '{description_prompt}'")
     
-    # asyncio.run() - правильный способ запустить async код из sync функции,
-    # которая выполняется в отдельном потоке.
     image_bytes = asyncio.run(generate_pollinations_image_async(description_prompt))
     
     if image_bytes:
@@ -390,11 +387,12 @@ async def ask_lore(interaction: discord.Interaction, question: str, personality:
             prompt = get_serious_lore_prompt(); embed_color = discord.Color.blue(); author_name = "Ответил Хранитель знаний"
         
         print("Начинаю сессию с Gemini и отправляю первичный запрос...")
-        # Gemini API V1Beta+ автоматически обрабатывает вызовы инструментов в фоновых потоках
+        # Сама библиотека Gemini запускает синхронные `tools` в отдельных потоках,
+        # что предотвращает блокировку основного цикла событий Discord.
         response = await lore_model.generate_content_async(
             f"{prompt}\n\nВопрос игрока: {question}"
         )
-        print("Обработка ответа Gemini завершена.")
+        print("Обработка ответа Gemini (включая все инструменты) завершена.")
 
         raw_text = response.text.strip()
         answer_text, sources_text = (raw_text.split("%%SOURCES%%") + [""])[:2]
