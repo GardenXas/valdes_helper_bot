@@ -51,52 +51,46 @@ CHARACTER_DATA_FILE = "characters.json"
 CHARACTERS_DATA = {}
 GENERATED_FILES_SESSION = []
 
-# --- 3. ИНСТРУМЕНТЫ ДЛЯ GEMINI (С ИСПРАВЛЕННОЙ ЛОГИКОЙ ASYNCIO) ---
+# --- 3. ИНСТРУМЕНТЫ ДЛЯ GEMINI (С ИСПРАВЛЕННОЙ АРХИТЕКТУРОЙ) ---
 
-async def generate_pollinations_image_async(session: aiohttp.ClientSession, description_prompt: str) -> bytes | None:
-    """Асинхронная вспомогательная функция для запроса к Pollinations.ai"""
+async def generate_pollinations_image_async(description_prompt: str) -> bytes | None:
+    """Асинхронная функция, которая непосредственно выполняет веб-запрос."""
     try:
         full_prompt = f"ancient scroll, old paper texture, ink drawing, colorless, sketch style, black and white, masterpiece, depicting {description_prompt}"
         encoded_prompt = urllib.parse.quote_plus(full_prompt)
         url = f"https://pollinations.ai/p/{encoded_prompt}?width=1024&height=768&seed={random.randint(1, 100000)}&model=flux"
-        async with session.get(url, timeout=120) as resp:
-            if resp.status == 200:
-                return await resp.read()
-            print(f"Ошибка при запросе к Pollinations.ai: Статус {resp.status}")
-            return None
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=120) as resp:
+                if resp.status == 200:
+                    return await resp.read()
+                print(f"Ошибка при запросе к Pollinations.ai: Статус {resp.status}")
+                return None
     except Exception as e:
         print(f"Критическая ошибка при генерации изображения: {e}")
         return None
 
 def generate_image(description_prompt: str):
     """
-    Синхронная обертка для Gemini. Безопасно запускает асинхронный код
-    в существующем цикле событий бота.
+    Синхронная обертка для Gemini. Gemini вызывает эту функцию в отдельном потоке.
+    Эта функция создает новый цикл asyncio для выполнения асинхронного кода,
+    не блокируя основной цикл бота.
     """
     global GENERATED_FILES_SESSION
     print(f"  [Инструмент] Получен вызов generate_image с промптом: '{description_prompt}'")
-
-    async def run_async_generation():
-        async with aiohttp.ClientSession() as session:
-            image_bytes = await generate_pollinations_image_async(session, description_prompt)
-            if image_bytes:
-                file = discord.File(io.BytesIO(image_bytes), filename=f"event_illustration_{random.randint(1,999)}.png")
-                GENERATED_FILES_SESSION.append(file)
-                print("  [Инструмент] Изображение успешно сгенерировано и добавлено в сессию.")
-                return {"status": "success", "message": "Изображение было успешно сгенерировано."}
-            else:
-                print("  [Инструмент] Ошибка: Не удалось сгенерировать изображение.")
-                return {"status": "error", "message": "Не удалось сгенерировать изображение."}
-
-    # ПРАВИЛЬНЫЙ СПОСОБ вызова async из sync в работающем приложении
-    try:
-        loop = asyncio.get_running_loop()
-        future = asyncio.run_coroutine_threadsafe(run_async_generation(), loop)
-        return future.result() # Ожидаем завершения в потокобезопасном режиме
-    except RuntimeError:
-        # На случай, если цикл еще не запущен (маловероятно, но безопасно)
-        return asyncio.run(run_async_generation())
-
+    
+    # asyncio.run() - правильный способ запустить async код из sync функции,
+    # которая выполняется в отдельном потоке.
+    image_bytes = asyncio.run(generate_pollinations_image_async(description_prompt))
+    
+    if image_bytes:
+        file = discord.File(io.BytesIO(image_bytes), filename=f"event_illustration_{random.randint(1,999)}.png")
+        GENERATED_FILES_SESSION.append(file)
+        print("  [Инструмент] Изображение успешно сгенерировано и добавлено в сессию.")
+        return {"status": "success", "message": "Изображение было успешно сгенерировано."}
+    else:
+        print("  [Инструмент] Ошибка: Не удалось сгенерировать изображение.")
+        return {"status": "error", "message": "Не удалось сгенерировать изображение."}
 
 # --- Инициализация моделей Gemini ---
 safety_settings = {
@@ -105,8 +99,8 @@ safety_settings = {
     genai.types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: genai.types.HarmBlockThreshold.BLOCK_NONE,
     genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
 }
-lore_model = genai.GenerativeModel('gemini-2.5-flash', tools=[generate_image], safety_settings=safety_settings)
-simple_model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety_settings)
+lore_model = genai.GenerativeModel('gemini-1.5-flash', tools=[generate_image], safety_settings=safety_settings)
+simple_model = genai.GenerativeModel('gemini-1.5-flash', safety_settings=safety_settings)
 
 # --- 4. ФУНКЦИИ-ЗАГРУЗЧИКИ ДАННЫХ ---
 def load_lore_from_file():
@@ -396,21 +390,11 @@ async def ask_lore(interaction: discord.Interaction, question: str, personality:
             prompt = get_serious_lore_prompt(); embed_color = discord.Color.blue(); author_name = "Ответил Хранитель знаний"
         
         print("Начинаю сессию с Gemini и отправляю первичный запрос...")
-        chat_session = lore_model.start_chat()
-        response = await chat_session.send_message_async(f"{prompt}\n\nВопрос игрока: {question}")
-
-        while True:
-            if response.candidates and response.candidates[0].content.parts and response.candidates[0].content.parts[0].function_call:
-                function_call = response.candidates[0].content.parts[0].function_call
-                if function_call.name == "generate_image":
-                    args = {key: value for key, value in function_call.args.items()}
-                    function_response = generate_image(**args)
-                    print("Инструмент отработал. Отправляю результат обратно в Gemini...")
-                    response = await chat_session.send_message_async(genai.Part.from_function_response(name="generate_image", response=function_response))
-                else:
-                    print(f"ОШИБКА: Gemini запросил неизвестный инструмент '{function_call.name}'"); break
-            else:
-                print("Вызовов инструментов больше нет. Получен финальный текстовый ответ."); break
+        # Gemini API V1Beta+ автоматически обрабатывает вызовы инструментов в фоновых потоках
+        response = await lore_model.generate_content_async(
+            f"{prompt}\n\nВопрос игрока: {question}"
+        )
+        print("Обработка ответа Gemini завершена.")
 
         raw_text = response.text.strip()
         answer_text, sources_text = (raw_text.split("%%SOURCES%%") + [""])[:2]
@@ -546,4 +530,4 @@ bot.tree.add_command(character_group)
 # --- 10. ЗАПУСК БОТА ---
 if __name__ == "__main__":
     keep_alive()
-    bot.run(DISCORD_TOKEN)
+    bot.run(DISCORD_TOKEN)```
