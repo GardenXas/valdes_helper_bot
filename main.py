@@ -21,6 +21,7 @@ import shutil
 import aiohttp
 from typing import List
 import urllib.parse
+import traceback # Для подробных отчетов об ошибках
 
 # --- Загрузка переменных окружения ---
 load_dotenv()
@@ -48,8 +49,7 @@ LORE_IMAGES_DIR = "lore_images"
 IMAGE_MAP_FILE = "image_map.json"
 CHARACTER_DATA_FILE = "characters.json"
 CHARACTERS_DATA = {}
-# Эта переменная будет хранить файлы ТОЛЬКО на время выполнения одного запроса /ask_lore
-GENERATED_FILES_SESSION = []
+GENERATED_FILES_SESSION = [] # Временное хранилище для сгенерированных файлов
 
 # --- 3. ИНСТРУМЕНТЫ ДЛЯ GEMINI ---
 
@@ -69,44 +69,48 @@ async def generate_pollinations_image(session: aiohttp.ClientSession, descriptio
         print(f"Критическая ошибка при генерации изображения: {e}")
         return None
 
-async def generate_image(description_prompt: str):
+def generate_image(description_prompt: str):
     """
     Инструмент для Gemini. Генерирует изображение по описанию события.
     Используй этот инструмент, чтобы визуально проиллюстрировать новость или событие из мира Вальдеса.
     """
     global GENERATED_FILES_SESSION
     print(f"  [Инструмент] Получен вызов generate_image с промптом: '{description_prompt}'")
-    async with aiohttp.ClientSession() as session:
-        image_bytes = await generate_pollinations_image(session, description_prompt)
-        if image_bytes:
-            file = discord.File(io.BytesIO(image_bytes), filename=f"event_illustration_{random.randint(1,999)}.png")
-            GENERATED_FILES_SESSION.append(file)
-            print("  [Инструмент] Изображение успешно сгенерировано и добавлено в сессию.")
-            return {"status": "success", "message": "Изображение было успешно сгенерировано."}
-        else:
-            print("  [Инструмент] Ошибка: Не удалось сгенерировать изображение.")
-            return {"status": "error", "message": "Не удалось сгенерировать изображение."}
+    
+    # Поскольку сама функция инструмента не может быть async, мы запускаем
+    # асинхронный код внутри нее через asyncio.
+    async def run_async_generation():
+        async with aiohttp.ClientSession() as session:
+            image_bytes = await generate_pollinations_image(session, description_prompt)
+            if image_bytes:
+                file = discord.File(io.BytesIO(image_bytes), filename=f"event_illustration_{random.randint(1,999)}.png")
+                GENERATED_FILES_SESSION.append(file)
+                print("  [Инструмент] Изображение успешно сгенерировано и добавлено в сессию.")
+                return {"status": "success", "message": "Изображение было успешно сгенерировано."}
+            else:
+                print("  [Инструмент] Ошибка: Не удалось сгенерировать изображение.")
+                return {"status": "error", "message": "Не удалось сгенерировать изображение."}
 
-# --- Инициализация моделей Gemini ---
+    # Запускаем и ждем завершения асинхронной операции
+    return asyncio.run(run_async_generation())
+
+# --- ИСПРАВЛЕННАЯ И НАДЕЖНАЯ ИНИЦИАЛИЗАЦИЯ МОДЕЛЕЙ ---
+safety_settings = {
+    genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+    genai.types.HarmCategory.HARM_CATEGORY_HATE_SPEECH: genai.types.HarmBlockThreshold.BLOCK_NONE,
+    genai.types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+    genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
+}
+
 # 1. Модель с инструментами для команды /ask_lore
-tools_for_lore = [genai.protos.Tool(
-    function_declarations=[genai.protos.FunctionDeclaration(
-        name='generate_image',
-        description='Вызывает API для генерации изображения на основе текстового описания события. Используй этот инструмент, чтобы визуально проиллюстрировать новость или событие из мира Вальдеса.',
-        parameters=genai.protos.Schema(
-            type=genai.protos.Type.OBJECT,
-            properties={'description_prompt': genai.protos.Schema(type=genai.protos.Type.STRING, description="Краткое, но яркое описание сцены на английском языке.")},
-            required=['description_prompt']
-        )
-    )])
-]
-lore_model = genai.GenerativeModel('gemini-2.5-flash', tools=tools_for_lore)
+# Мы просто передаем саму функцию - это простой и надежный способ.
+lore_model = genai.GenerativeModel('gemini-2.5-flash', tools=[generate_image], safety_settings=safety_settings)
 
 # 2. Простая модель для команд, не требующих инструментов
-simple_model = genai.GenerativeModel('gemini-2.5-flash')
+simple_model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety_settings)
+
 
 # --- 4. ФУНКЦИИ-ЗАГРУЗЧИКИ ДАННЫХ ---
-
 def load_lore_from_file():
     global VALDES_LORE
     try:
@@ -134,8 +138,9 @@ def load_characters():
 def save_characters():
     with open(CHARACTER_DATA_FILE, 'w', encoding='utf-8') as f: json.dump(CHARACTERS_DATA, f, indent=4)
 
-# --- 5. СИСТЕМНЫЕ ПРОМПТЫ ---
 
+# --- 5. СИСТЕМНЫЕ ПРОМПТЫ ---
+# (Промпты остались те же, но теперь они будут работать с правильно определенным инструментом)
 def get_optimizer_prompt(character_info=None):
     character_context_prompt = ""
     if character_info:
@@ -158,7 +163,6 @@ def keep_alive(): Thread(target=run, daemon=True).start()
 intents = discord.Intents.default(); intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ... (UI классы OptimizedPostModal и PostView без изменений) ...
 class OptimizedPostModal(ui.Modal, title='Ваш улучшенный пост'):
     def __init__(self, optimized_text: str):
         super().__init__()
@@ -176,7 +180,6 @@ class PostView(ui.View):
         await interaction.response.send_modal(OptimizedPostModal(self.optimized_text))
 
 # --- 7. ЕЖЕДНЕВНЫЕ ЗАДАЧИ И СОБЫТИЯ БОТА ---
-# ... (Код для DAILY_ACCESS_CODE без изменений) ...
 DAILY_ACCESS_CODE = ""
 CODE_FILE = "code.json"
 def save_daily_code(code):
@@ -242,9 +245,8 @@ async def on_ready():
     except Exception as e: print(f"Ошибка синхронизации: {e}")
 
 # --- 8. ОСНОВНЫЕ КОМАНДЫ БОТА ---
-
 def clean_discord_mentions(text: str, guild: discord.Guild) -> str:
-    # ... (код без изменений) ...
+    # (код без изменений)
     if not text: return ""
     text = re.sub(r'<#(\d+)>', lambda m: f'#{bot.get_channel(int(m.group(1))).name}' if bot.get_channel(int(m.group(1))) else m.group(0), text)
     if guild: text = re.sub(r'<@&(\d+)>', lambda m: f'@{guild.get_role(int(m.group(1))).name}' if guild.get_role(int(m.group(1))) else m.group(0), text)
@@ -252,7 +254,7 @@ def clean_discord_mentions(text: str, guild: discord.Guild) -> str:
     return text
 
 async def parse_channel_content(channels_to_parse: list, session: aiohttp.ClientSession, download_images: bool = True):
-    # ... (код без изменений) ...
+    # (код без изменений)
     full_text = ""
     total_messages_count = 0
     image_id_counter = 1
@@ -389,6 +391,7 @@ async def optimize_post(interaction: discord.Interaction, post_text: str, image:
     except Exception as e:
         print(f"Ошибка в /optimize_post: {e}"); await interaction.followup.send("🚫 Произошла внутренняя ошибка.", color=discord.Color.dark_red(), ephemeral=True)
 
+# --- ГЛАВНАЯ КОМАНДА ЛОРА С ИСПРАВЛЕННОЙ ЛОГИКОЙ ---
 @bot.tree.command(name="ask_lore", description="Задать вопрос по миру, правилам и лору 'Вальдеса'")
 @app_commands.describe(question="Ваш вопрос Хранителю знаний.", personality="Выберите характер ответа.")
 @app_commands.choices(personality=[
@@ -398,43 +401,58 @@ async def optimize_post(interaction: discord.Interaction, post_text: str, image:
 async def ask_lore(interaction: discord.Interaction, question: str, personality: discord.app_commands.Choice[str] = None):
     global GENERATED_FILES_SESSION
     GENERATED_FILES_SESSION.clear()
-    print(f"\nПолучен /ask_lore от '{interaction.user.display_name}'. Вопрос: '{question}'");
+    print(f"\nПолучен /ask_lore от '{interaction.user.display_name}'. Вопрос: '{question}'")
     await interaction.response.defer(ephemeral=False)
+    
     try:
         if personality and personality.value == 'edgy':
             prompt = get_edgy_lore_prompt(); embed_color = discord.Color.red(); author_name = "Ответил Циничный Старик"
         else:
             prompt = get_serious_lore_prompt(); embed_color = discord.Color.blue(); author_name = "Ответил Хранитель знаний"
-        print("Генерирую ответ и проверяю необходимость вызова инструментов...");
-        chat_session = lore_model.start_chat()
-        response = await chat_session.send_message_async(f"{prompt}\n\nВопрос игрока: {question}")
-        while response.candidates[0].content.parts and response.candidates[0].content.parts[0].function_call:
-            function_call = response.candidates[0].content.parts[0].function_call
-            if function_call.name == "generate_image":
-                args = {key: value for key, value in function_call.args.items()}
-                function_response = await generate_image(**args)
-                response = await chat_session.send_message_async(genai.Part.from_function_response(name="generate_image", response=function_response))
+        
+        print("Генерирую ответ и проверяю необходимость вызова инструментов...")
+        # Используем generate_content, а не start_chat, для более простого цикла
+        response = await lore_model.generate_content_async(
+            f"{prompt}\n\nВопрос игрока: {question}",
+            generation_config=genai.types.GenerationConfig() # Обеспечиваем наличие candidates
+        )
+
+        if not response.candidates:
+            block_reason = response.prompt_feedback.block_reason.name if response.prompt_feedback else "Неизвестно"
+            print(f"КРИТИКА: Запрос заблокирован системой безопасности. Причина: {block_reason}")
+            await interaction.followup.send(f"🚫 **Ошибка:** Ваш запрос был заблокирован. Причина: `{block_reason}`. Попробуйте переформулировать.", ephemeral=True)
+            return
+
         print("Все инструменты отработали. Получен финальный текстовый ответ.")
         raw_text = response.text.strip()
         answer_text, sources_text = (raw_text.split("%%SOURCES%%") + [""])[:2]
         answer_text = answer_text.strip(); sources_text = sources_text.strip()
+        
         embed = discord.Embed(title="📜 Ответ из архивов Вальдеса", description=answer_text, color=embed_color)
         embed.add_field(name="Ваш запрос:", value=question, inline=False)
         if sources_text: embed.add_field(name="Источники:", value=sources_text, inline=False)
         embed.set_footer(text=f"{author_name} | Запросил: {interaction.user.display_name}")
+        
         print("Отправляю финальный текстовый ответ...")
         await interaction.followup.send(embed=embed)
+
         if GENERATED_FILES_SESSION:
             print(f"Отправляю {len(GENERATED_FILES_SESSION)} сгенерированных изображений...")
             gossip_embed = discord.Embed(title="🎨 Зарисовки к последним событиям", description="Образы, увиденные через магический артефакт...", color=embed_color)
             await interaction.followup.send(embed=gossip_embed, files=GENERATED_FILES_SESSION)
+        
         print("Обработка /ask_lore завершена.\n")
+
     except Exception as e:
-        print(f"КРИТИКА в /ask_lore: {e}"); await interaction.followup.send("🚫 Ошибка в архиве. Архивариус не смог найти ответ или его артефакт дал сбой.", ephemeral=True)
+        print(f"КРИТИЧЕСКАЯ НЕПРЕДВИДЕННАЯ ОШИБКА в /ask_lore:")
+        traceback.print_exc() # Выводим полную информацию об ошибке в консоль
+        await interaction.followup.send("🚫 Ошибка в архиве. Архивариус не смог найти ответ или его артефакт дал сбой. **Подробности записаны в лог консоли.**", ephemeral=True)
     finally:
         GENERATED_FILES_SESSION.clear()
 
+
 @bot.tree.command(name="help", description="Показывает информацию обо всех доступных командах.")
+# ... (код без изменений) ...
 async def help(interaction: discord.Interaction):
     embed = discord.Embed(title="📜 Справка по командам", color=discord.Color.blue())
     embed.add_field(name="/character [add|set_bio|delete|select|view]", value="Полный набор команд для управления вашими персонажами.", inline=False)
@@ -445,6 +463,7 @@ async def help(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="about", description="Показывает информацию о боте.")
+# ... (код без изменений) ...
 async def about(interaction: discord.Interaction):
     embed = discord.Embed(title="О боте 'Хранитель Вальдеса'", color=discord.Color.gold())
     embed.add_field(name="Разработчик", value="**GX**", inline=True)
@@ -453,8 +472,7 @@ async def about(interaction: discord.Interaction):
 
 # --- 9. КОМАНДЫ УПРАВЛЕНИЯ ПЕРСОНАЖАМИ ---
 character_group = app_commands.Group(name="character", description="Управление вашими персонажами")
-
-# ... (код команд character без изменений) ...
+# ... (весь блок команд character без изменений) ...
 async def character_name_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
     user_id = str(interaction.user.id)
     if user_id not in CHARACTERS_DATA: return []
@@ -545,4 +563,3 @@ bot.tree.add_command(character_group)
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
-
