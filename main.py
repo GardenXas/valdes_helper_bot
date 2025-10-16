@@ -51,7 +51,7 @@ CHARACTER_DATA_FILE = "characters.json"
 CHARACTERS_DATA = {}
 GENERATED_FILES_SESSION = []
 
-# --- 3. ИНСТРУМЕНТЫ ДЛЯ GEMINI (С ИСПРАВЛЕННОЙ АРХИТЕКТУРОЙ) ---
+# --- 3. ИНСТРУМЕНТЫ ДЛЯ GEMINI ---
 
 async def generate_pollinations_image_async(description_prompt: str) -> bytes | None:
     """Асинхронная функция, которая непосредственно выполняет веб-запрос."""
@@ -387,13 +387,23 @@ async def ask_lore(interaction: discord.Interaction, question: str, personality:
             prompt = get_serious_lore_prompt(); embed_color = discord.Color.blue(); author_name = "Ответил Хранитель знаний"
         
         print("Начинаю сессию с Gemini и отправляю первичный запрос...")
-        # Сама библиотека Gemini запускает синхронные `tools` в отдельных потоках,
-        # что предотвращает блокировку основного цикла событий Discord.
-        response = await lore_model.generate_content_async(
-            f"{prompt}\n\nВопрос игрока: {question}"
-        )
-        print("Обработка ответа Gemini (включая все инструменты) завершена.")
+        chat_session = lore_model.start_chat()
+        response = await chat_session.send_message_async(f"{prompt}\n\nВопрос игрока: {question}")
 
+        while response.candidates[0].content.parts[0].function_call:
+            fc = response.candidates[0].content.parts[0].function_call
+            print(f"Gemini запросил вызов инструмента: {fc.name}")
+            
+            # Библиотека Gemini автоматически вызывает синхронные функции-инструменты в отдельном потоке,
+            # что предотвращает блокировку основного потока Discord.
+            result = generate_image(**{key: value for key, value in fc.args.items()})
+            
+            print("Инструмент отработал. Отправляю результат обратно в Gemini...")
+            response = await chat_session.send_message_async(
+                genai.Part.from_function_response(name=fc.name, response=result)
+            )
+        
+        print("Вызовов инструментов больше нет. Получен финальный текстовый ответ.")
         raw_text = response.text.strip()
         answer_text, sources_text = (raw_text.split("%%SOURCES%%") + [""])[:2]
         answer_text = answer_text.strip(); sources_text = sources_text.strip()
@@ -528,4 +538,4 @@ bot.tree.add_command(character_group)
 # --- 10. ЗАПУСК БОТА ---
 if __name__ == "__main__":
     keep_alive()
-    bot.run(DISCORD_TOKEN)
+    bot.run(DISCORD_TOKEN)```
