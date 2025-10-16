@@ -100,10 +100,10 @@ tools_for_lore = [genai.protos.Tool(
         )
     )])
 ]
-lore_model = genai.GenerativeModel('gemini-1.5-flash', tools=tools_for_lore)
+lore_model = genai.GenerativeModel('gemini-2.5-flash', tools=tools_for_lore)
 
 # 2. Простая модель для команд, не требующих инструментов
-simple_model = genai.GenerativeModel('gemini-1.5-flash')
+simple_model = genai.GenerativeModel('gemini-2.5-flash')
 
 # --- 4. ФУНКЦИИ-ЗАГРУЗЧИКИ ДАННЫХ ---
 
@@ -545,3 +545,4 @@ bot.tree.add_command(character_group)
 if __name__ == "__main__":
     keep_alive()
     bot.run(DISCORD_TOKEN)
+
